@@ -1,5 +1,27 @@
 # 赛智通 Multi-Agent Demo
 
+## 部署到 Render
+
+项目已包含 `render.yaml`，可以作为 Render Web Service 部署并获得公开的
+`https://<服务名>.onrender.com` 地址。
+
+1. 将代码推送到 GitHub 仓库。
+2. 登录 Render，选择 **New → Blueprint**。
+3. 连接该 GitHub 仓库，Render 会自动读取 `render.yaml`。
+4. 为 `DEEPSEEK_API_KEY` 填写密钥；不要把真实密钥提交到 Git。
+5. 创建服务并等待构建完成。
+
+Render 使用以下配置：
+
+- Build Command：`pip install -r requirements.txt`
+- Start Command：`python app.py`
+- Host：`0.0.0.0`
+- Port：由 Render 的 `PORT` 环境变量自动注入
+
+免费 Web Service 在空闲一段时间后会休眠，首次重新访问可能需要等待启动。
+`data/output` 中的材料文件在免费实例上属于临时数据，服务重启或重新部署后可能丢失；
+如需长期保存，应配置 Render Persistent Disk 或对象存储。
+
 赛智通是面向大学生科研竞赛申请的轻量级多智能体辅助系统。
 
 ## 项目结构

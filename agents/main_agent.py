@@ -134,6 +134,20 @@ class MainAgent:
         fallback_agents = self.select_agents(input_data)
         fallback_plan = self._build_rule_plan(input_data, fallback_agents)
 
+        # Explicit task types come from the UI/API contract. Their dependency
+        # chain must be determined by the data that is actually present, not
+        # replaced by a free-form LLM plan that may request unavailable inputs.
+        task_type = str(input_data.get("task_type", "")).lower()
+        explicit_task_types = {
+            "collect", "info_collect", "data_collect",
+            "extract", "info_extract",
+            "recommend", "recommendation",
+            "material", "generate_material",
+            "full_process", "application_assistant", "mvp_demo",
+        }
+        if task_type in explicit_task_types:
+            return fallback_plan
+
         if not self._is_llm_enabled():
             return fallback_plan
 
@@ -163,8 +177,14 @@ class MainAgent:
         if task_type in {"recommend", "recommendation"}:
             if payload.get("structured_items") or payload.get("projects"):
                 return ["recommendation"]
+            if self._has_raw_text_input(payload):
+                return ["info_extract", "recommendation"]
             return ["info_collect", "info_extract", "recommendation"]
         if task_type in {"material", "generate_material"}:
+            if payload.get("project_info") or payload.get("structured_items") or payload.get("projects"):
+                return ["material"]
+            if self._has_raw_text_input(payload):
+                return ["info_extract", "material"]
             return ["material"]
         if task_type in {"full_process", "application_assistant", "mvp_demo"}:
             return self._select_full_process_agents(payload)
@@ -651,9 +671,20 @@ If no agent is needed, selected_agents must be empty.
     def _select_full_process_agents(self, payload: dict[str, Any]) -> list[str]:
         if payload.get("structured_items") or payload.get("projects"):
             selected = ["recommendation", "material"]
+        elif self._has_raw_text_input(payload):
+            selected = ["info_extract", "recommendation", "material"]
         else:
             selected = ["info_collect", "info_extract", "recommendation", "material"]
         return selected
+
+    @staticmethod
+    def _has_raw_text_input(payload: dict[str, Any]) -> bool:
+        return bool(
+            payload.get("notification_text")
+            or payload.get("raw_text")
+            or payload.get("raw_project_text")
+            or payload.get("raw_items")
+        )
 
     def _build_final_answer(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:
         planning = planning or {}

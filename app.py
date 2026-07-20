@@ -5,7 +5,9 @@ import html
 import json
 import os
 import threading
+from datetime import date
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -44,6 +46,22 @@ DATA_SOURCE_CHOICES = [
     ("公开网页", "web"),
     ("上传或粘贴文本", "upload"),
     ("混合来源", "mixed"),
+]
+
+MATERIAL_TYPE_CHOICES = [
+    ("自动识别", ""),
+    ("挑战杯（大挑）申报书", "challenge_cup_grand_application"),
+    ("挑战杯（大挑）材料清单", "challenge_cup_grand_checklist"),
+    ("挑战杯（大挑）答辩 PPT", "challenge_cup_grand_ppt"),
+    ("挑战杯创业计划书", "challenge_cup_business_plan"),
+    ("挑战杯创业材料清单", "challenge_cup_business_checklist"),
+    ("互联网+ / 创新创业商业计划书", "innovation_contest_business_plan"),
+    ("互联网+ / 创新创业申报表", "innovation_contest_application_form"),
+    ("互联网+ / 创新创业材料清单", "innovation_contest_checklist"),
+    ("通用申报表", "generic_application_form"),
+    ("通用项目报告", "generic_project_report"),
+    ("通用答辩 PPT", "generic_ppt"),
+    ("通用准备进度表", "generic_schedule"),
 ]
 
 APP_CSS = r"""
@@ -245,6 +263,21 @@ def split_tags(value: str | None) -> list[str]:
     return [item.strip() for item in normalized.split(",") if item.strip()]
 
 
+def build_academic_profile(grade: str | None, today: date | None = None) -> dict:
+    """Translate the UI grade label to RecommendationAgent profile fields."""
+    grade = clean_text(grade)
+    profile = {"grade": grade}
+    if grade in {"大一", "大二", "大三", "大四"}:
+        profile["education_level"] = "本科"
+        grade_index = {"大一": 1, "大二": 2, "大三": 3, "大四": 4}[grade]
+        current = today or date.today()
+        academic_year_start = current.year if current.month >= 9 else current.year - 1
+        profile["enrollment_year"] = academic_year_start - (grade_index - 1)
+    elif "研究生" in grade:
+        profile["education_level"] = "研究生"
+    return profile
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         return {}
@@ -268,6 +301,7 @@ def build_standard_input(
     source_url: str | None,
     notification_text: str | None,
     project_json: str | None,
+    material_type: str | None,
 ) -> dict:
     user_input = clean_text(user_input)
     task_type = clean_text(task_type) or "full_process"
@@ -275,15 +309,21 @@ def build_standard_input(
     notification_text = clean_text(notification_text)
     source_url = clean_text(source_url)
     project_json = clean_text(project_json)
+    material_type = clean_text(material_type)
     payload: dict = {"data_source": data_source}
 
     if source_url:
         payload["source_url"] = source_url
     if notification_text:
         payload["notification_text"] = notification_text
+    if material_type:
+        payload["material_type"] = material_type
     if project_json:
         try:
-            payload["projects"] = json.loads(project_json)
+            parsed_projects = json.loads(project_json)
+            if isinstance(parsed_projects, dict):
+                parsed_projects = [parsed_projects]
+            payload["projects"] = parsed_projects
         except json.JSONDecodeError:
             payload["raw_project_text"] = project_json
 
@@ -293,7 +333,7 @@ def build_standard_input(
         "task_type": task_type,
         "user_profile": {
             "major": clean_text(major),
-            "grade": clean_text(grade),
+            **build_academic_profile(grade),
             "interests": split_tags(interests),
             "skills": split_tags(skills),
         },
@@ -311,15 +351,42 @@ def validate_form(
     data_source: str | None,
     source_url: str | None,
     notification_text: str | None,
+    project_json: str | None,
+    material_type: str | None,
 ) -> str | None:
+    task = clean_text(task_type) or "full_process"
+    source = clean_text(data_source) or "local"
+    source_url = clean_text(source_url)
+    notification_text = clean_text(notification_text)
+    project_json = clean_text(project_json)
+    material_type = clean_text(material_type)
+
     if not clean_text(user_input):
         return "请先输入你希望赛智通完成的任务。"
-    if clean_text(task_type) == "info_extract" and not clean_text(notification_text):
+    if project_json:
+        try:
+            parsed_projects = json.loads(project_json)
+        except json.JSONDecodeError as exc:
+            return f"项目数据 JSON 格式不正确：第 {exc.lineno} 行第 {exc.colno} 列。"
+        if not isinstance(parsed_projects, (dict, list)):
+            return "项目数据 JSON 必须是一个项目对象，或由项目对象组成的列表。"
+        if isinstance(parsed_projects, list) and not parsed_projects:
+            return "项目数据 JSON 列表不能为空。"
+        if isinstance(parsed_projects, list) and not all(isinstance(item, dict) for item in parsed_projects):
+            return "项目数据 JSON 列表中的每一项都必须是项目对象。"
+
+    if task == "info_extract" and not notification_text:
         return "信息抽取任务需要在“通知原文”中粘贴待抽取内容。"
-    if clean_text(data_source) == "web" and not clean_text(source_url):
+    if source in {"web", "mixed"} and not source_url:
         return "选择“公开网页”后，请填写需要采集的网页 URL。"
-    if clean_text(data_source) == "upload" and not clean_text(notification_text):
+    if source in {"upload", "mixed"} and not notification_text:
         return "选择“上传或粘贴文本”后，请粘贴需要处理的原始文本。"
+    if source == "local" and task in {"full_process", "recommendation", "material"} and not project_json:
+        return "本地项目库尚未配置自动读取；请在“高级输入”中填写项目数据 JSON，或改用“上传或粘贴文本”。"
+    if task == "info_collect" and source == "upload":
+        return "粘贴的通知文本已经是原始信息，请将任务类型改为“通知信息抽取”或“全流程辅助”。"
+    if task == "material" and not material_type:
+        return "材料生成任务请在“高级输入”中选择材料类型；全流程任务也可选择“自动识别”。"
     return None
 
 
@@ -366,6 +433,235 @@ def build_status_rows(agent_results: list[dict]) -> list[list[str]]:
     ]
 
 
+CHAT_WELCOME = (
+    "你好，我是赛智通。你可以直接告诉我目标，例如：\n\n"
+    "- 我是计算机专业大三学生，想参加国家级人工智能竞赛\n"
+    "- 帮我从这份竞赛通知中提取要求并推荐\n"
+    "- 根据刚才推荐的项目生成报名材料\n\n"
+    "信息不完整时，我会一次追问一项，并在本次对话中持续记住。"
+)
+
+
+def new_chat_state() -> dict[str, Any]:
+    return {
+        "intent": "",
+        "major": "",
+        "grade": "",
+        "interests": [],
+        "skills": [],
+        "competition_type": "",
+        "competition_level": "",
+        "notification_text": "",
+        "project_name": "",
+        "material_type": "",
+        "last_result": {},
+        "turns": [],
+    }
+
+
+def initial_chat_messages() -> list[dict[str, str]]:
+    return [{"role": "assistant", "content": CHAT_WELCOME}]
+
+
+def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
+    state = {**new_chat_state(), **(state or {})}
+    text = clean_text(message)
+    state["turns"] = [*state.get("turns", []), text]
+
+    if any(word in text for word in ["材料", "申报", "报名表", "简历", "计划书", "PPT"]):
+        state["intent"] = "material"
+    elif any(word in text for word in ["竞赛", "比赛", "推荐", "项目"]):
+        state["intent"] = state.get("intent") or "recommendation"
+
+    major_aliases = {
+        "计算机": "计算机科学与技术", "软件": "软件工程", "人工智能": "人工智能",
+        "数据科学": "数据科学与大数据技术", "电子信息": "电子信息工程",
+        "自动化": "自动化", "金融": "金融学", "工商管理": "工商管理",
+    }
+    for keyword, normalized in major_aliases.items():
+        if keyword in text and (
+            any(marker in text for marker in ["专业", "学生", "我是", "学的"])
+            or len(text) <= 30
+        ):
+            state["major"] = normalized
+            break
+
+    for grade in ["大一", "大二", "大三", "大四", "研究生"]:
+        if grade in text:
+            state["grade"] = grade
+            break
+
+    for level in ["国际级", "国家级", "省级", "校级"]:
+        if level in text:
+            state["competition_level"] = level
+            break
+
+    type_aliases = {
+        "人工智能": "人工智能", "AI": "人工智能", "算法": "算法与程序设计",
+        "程序设计": "算法与程序设计", "创新创业": "创新创业", "创业": "创新创业",
+        "科研": "科研学术", "数据分析": "数据分析", "数学建模": "数学建模",
+    }
+    for keyword, normalized in type_aliases.items():
+        if keyword in text:
+            state["competition_type"] = normalized
+            if normalized not in state["interests"]:
+                state["interests"] = [*state["interests"], normalized]
+            break
+
+    known_skills = ["Python", "Java", "C++", "机器学习", "深度学习", "数据分析", "文案写作", "团队协作"]
+    for skill in known_skills:
+        if skill.lower() in text.lower() and skill not in state["skills"]:
+            state["skills"] = [*state["skills"], skill]
+
+    if len(text) >= 80 or ("通知" in text and any(word in text for word in ["截止", "报名", "参赛"])):
+        state["notification_text"] = text
+
+    if "项目名称" in text or "竞赛名称" in text:
+        separator = "：" if "：" in text else ":"
+        if separator in text:
+            state["project_name"] = text.split(separator, 1)[1].strip()
+
+    material_map = {
+        "报名表": "generic_application_form", "报名简历": "generic_application_form",
+        "简历": "generic_application_form", "计划书": "innovation_contest_business_plan",
+        "PPT": "generic_ppt", "进度表": "generic_schedule", "清单": "challenge_cup_grand_checklist",
+    }
+    for keyword, material_type in material_map.items():
+        if keyword in text:
+            state["material_type"] = material_type
+            break
+    return state
+
+
+def _next_chat_question(state: dict[str, Any]) -> str | None:
+    if not state.get("intent"):
+        return "你希望我帮你推荐竞赛，还是为已有项目生成申报材料？"
+    if not state.get("major"):
+        return "先告诉我你的专业是什么？例如：计算机科学与技术。"
+    if not state.get("grade"):
+        return "你目前是大几或研究生阶段？这会影响参赛资格判断。"
+    if state["intent"] == "recommendation":
+        if not state.get("competition_type"):
+            return "你更想参加哪类竞赛？例如人工智能、算法、数学建模或创新创业。"
+        if not state.get("competition_level"):
+            return "你倾向校级、省级、国家级还是国际级竞赛？"
+    if state["intent"] == "material":
+        has_previous = bool(state.get("last_result"))
+        if not state.get("notification_text") and not state.get("project_name") and not has_previous:
+            return "请粘贴竞赛通知全文，或按“项目名称：XXX”告诉我具体项目。"
+        if not state.get("material_type"):
+            return "你想生成哪种材料？例如报名表、报名简历、计划书、PPT 或材料清单。"
+    return None
+
+
+def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
+    profile = {
+        "major": state.get("major", ""),
+        **build_academic_profile(state.get("grade", "")),
+        "interests": state.get("interests", []),
+        "skills": state.get("skills", []),
+        "competition_level": state.get("competition_level", ""),
+    }
+    payload: dict[str, Any] = {}
+    task_type = state.get("intent") or "recommendation"
+    notification = state.get("notification_text", "")
+    if notification:
+        payload.update({"data_source": "upload", "notification_text": notification})
+    else:
+        payload.update({"data_source": "web", "source_url": "https://www.saikr.com/"})
+
+    if state.get("competition_type"):
+        payload["keywords"] = [state["competition_type"], state.get("competition_level", "")]
+    if state.get("material_type"):
+        payload["material_type"] = state["material_type"]
+    if state.get("project_name"):
+        payload["project_info"] = {
+            "project_name": state["project_name"],
+            "background": "根据对话收集的信息生成申报材料初稿。",
+        }
+
+    last_result = state.get("last_result", {})
+    if task_type == "material" and not payload.get("project_info") and isinstance(last_result, dict):
+        for agent_result in last_result.get("data", {}).get("agent_results", []):
+            recommendations = agent_result.get("data", {}).get("recommendations", [])
+            if recommendations:
+                payload["project_info"] = {
+                    "project_name": recommendations[0].get("title", "推荐项目"),
+                    "background": recommendations[0].get("reason", "根据上一轮推荐结果生成。"),
+                }
+                break
+
+    return {
+        "task_id": f"chat_task_{uuid4().hex[:8]}",
+        "user_input": "；".join(state.get("turns", [])) or message,
+        "task_type": task_type,
+        "user_profile": profile,
+        "context": {"conversation_turns": state.get("turns", [])},
+        "input_data": payload,
+        "history": [],
+        "required_output": "markdown",
+        "metadata": {"source": "gradio_chat", "ui_version": "3.0"},
+    }
+
+
+def _result_downloads(result: dict) -> list[str]:
+    downloads = []
+    for agent_result in result.get("data", {}).get("agent_results", []):
+        for path in agent_result.get("data", {}).get("_saved_files", []) or []:
+            if Path(path).is_file():
+                downloads.append(str(Path(path).resolve()))
+    return downloads
+
+
+def _chat_result_text(result: dict) -> str:
+    lines = []
+    for item in result.get("data", {}).get("agent_results", []):
+        data = item.get("data", {})
+        recommendations = data.get("recommendations", [])
+        if recommendations:
+            lines.append("### 推荐结果")
+            for index, recommendation in enumerate(recommendations, 1):
+                lines.append(
+                    f"{index}. **{recommendation.get('title', '未命名项目')}** "
+                    f"（匹配分 {recommendation.get('match_score', '-')}）\n"
+                    f"   {recommendation.get('reason', '')}"
+                )
+        if data.get("material_name"):
+            lines.append(f"### 材料已生成\n{data['material_name']} 已生成，可在下方下载并人工复核。")
+    return "\n\n".join(lines) or result.get("data", {}).get("final_answer", "任务已完成。")
+
+
+def chat_submit(message, history, state):
+    message = clean_text(message)
+    history = list(history or initial_chat_messages())
+    state = state or new_chat_state()
+    if not message:
+        return "", history, state, build_status_html("ready"), EMPTY_RESULT, [], {}, []
+
+    history.append({"role": "user", "content": message})
+    state = _update_chat_state(state, message)
+    question = _next_chat_question(state)
+    if question:
+        history.append({"role": "assistant", "content": question})
+        snapshot = {key: value for key, value in state.items() if key not in {"last_result", "turns"}}
+        return "", history, state, build_status_html("need_input", question), f"**已记录信息**\n\n```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```", [], snapshot, []
+
+    standard_input = _chat_standard_input(state, message)
+    result = MainAgent(config=load_config()).run(standard_input)
+    state["last_result"] = result
+    answer = _chat_result_text(result)
+    downloads = _result_downloads(result)
+    if downloads:
+        answer += "\n\n文件已经生成，可在右侧下载。提交前请人工核对个人信息和竞赛要求。"
+    history.append({"role": "assistant", "content": answer})
+    rows = build_status_rows(result.get("data", {}).get("agent_results", []))
+    return "", history, state, build_status_html(result.get("status", "failed"), result.get("message")), answer, rows, result, downloads
+
+
+def clear_chat():
+    return initial_chat_messages(), new_chat_state(), build_status_html("ready", "开始描述你的目标"), EMPTY_RESULT, [], {}, []
+
+
 def run_main_agent(
     user_input: str | None,
     task_type: str | None,
@@ -377,8 +673,11 @@ def run_main_agent(
     source_url: str | None,
     notification_text: str | None,
     project_json: str | None,
+    material_type: str | None,
 ) -> tuple[str, str, list[list[str]], dict]:
-    validation_error = validate_form(user_input, task_type, data_source, source_url, notification_text)
+    validation_error = validate_form(
+        user_input, task_type, data_source, source_url, notification_text, project_json, material_type
+    )
     if validation_error:
         result = {"status": "need_input", "message": validation_error}
         return build_status_html("need_input", validation_error), f">提示：{validation_error}", [], result
@@ -386,7 +685,7 @@ def run_main_agent(
     try:
         standard_input = build_standard_input(
             user_input, task_type, data_source, major, grade, interests, skills,
-            source_url, notification_text, project_json,
+            source_url, notification_text, project_json, material_type,
         )
         result = MainAgent(config=load_config()).run(standard_input)
         data = result.get("data", {})
@@ -409,12 +708,24 @@ def run_main_agent(
         return build_status_html("failed", str(exc)), f"执行失败：{exc}", [], error_result
 
 
-def load_demo() -> tuple[str, str, str, str, str, str, str, str, str, str]:
+def run_main_agent_with_downloads(*args):
+    status, answer, rows, result = run_main_agent(*args)
+    return status, answer, rows, result, _result_downloads(result)
+
+
+def load_demo() -> tuple[str, str, str, str, str, str, str, str, str, str, str]:
     return (
         "请根据我的专业、兴趣和技能，推荐适合的科研或竞赛项目，并生成申报准备清单。",
-        "full_process", "local", "计算机科学与技术", "大三",
-        "人工智能，数据分析，创新创业", "Python，机器学习，团队协作", "", "",
-        "",
+        "full_process", "upload", "计算机科学与技术", "大三",
+        "人工智能，数据分析，创新创业", "Python，机器学习，团队协作", "",
+        (
+            "关于举办2026年“挑战杯”大学生课外学术科技作品竞赛的通知。\n"
+            "参赛对象：全日制在校大学生，可组成3至5人团队。\n"
+            "作品方向：人工智能、数据分析、社会治理与科技创新。\n"
+            "报名截止时间：2026年9月30日。\n"
+            "申报要求：提交项目申报书、研究报告、团队介绍及相关证明材料。"
+        ),
+        "", "challenge_cup_grand_checklist",
     )
 
 
@@ -438,6 +749,43 @@ def create_interface():
     with gr.Blocks(**blocks_kwargs) as demo:
         with gr.Column(elem_classes=["szt-shell"]):
             gr.HTML(HERO_HTML)
+
+            gr.HTML('<div class="szt-section-title"><h3>对话式竞赛助手</h3><p>像聊天一样补充信息，系统会记住上下文并在信息齐全后自动执行</p></div>')
+            chat_state = gr.State(new_chat_state())
+            with gr.Row(equal_height=False, elem_classes=["szt-main-grid"]):
+                with gr.Column(scale=7, min_width=560, elem_classes=["szt-card", "szt-panel"]):
+                    chatbot = gr.Chatbot(
+                        value=initial_chat_messages(),
+                        height=560,
+                        layout="bubble",
+                        label="赛智通对话",
+                        placeholder="告诉我你的专业、年级和想参加的竞赛，我会逐步追问。",
+                    )
+                    with gr.Row():
+                        chat_input = gr.Textbox(
+                            placeholder="例如：我是计算机专业，想找国家级人工智能竞赛",
+                            show_label=False,
+                            scale=8,
+                        )
+                        chat_send = gr.Button("发送", variant="primary", scale=1)
+                    chat_clear = gr.Button("开始新对话", elem_classes=["szt-secondary"])
+                with gr.Column(scale=5, min_width=460, elem_classes=["szt-card", "szt-panel"]):
+                    chat_status = gr.HTML(build_status_html("ready", "开始描述你的目标"))
+                    chat_answer = gr.Markdown(EMPTY_RESULT, elem_classes=["szt-result"])
+                    chat_downloads = gr.File(
+                        label="生成材料下载",
+                        file_count="multiple",
+                        interactive=False,
+                    )
+                    with gr.Accordion("执行详情", open=False):
+                        chat_agent_statuses = gr.Dataframe(
+                            headers=["Agent", "执行状态", "执行说明"],
+                            datatype=["str", "str", "str"],
+                            value=[], interactive=False, wrap=True,
+                        )
+                        chat_raw_output = gr.JSON(value={}, label="完整运行数据")
+
+            gr.HTML('<div class="szt-section-title" style="margin-top:24px"><h3>高级表单模式</h3><p>需要精确指定数据源、材料模板或调试 Agent 时使用</p></div>')
 
             with gr.Row(equal_height=False, elem_classes=["szt-main-grid"]):
                 with gr.Column(scale=6, min_width=460, elem_classes=["szt-card", "szt-panel", "szt-input-panel"]):
@@ -475,6 +823,12 @@ def create_interface():
 
                     with gr.Accordion("高级输入 · 结构化项目数据", open=False):
                         project_json = gr.Textbox(label="项目数据 JSON", placeholder='[{"name": "项目名称", "deadline": "2026-09-30"}]', lines=5)
+                        material_type = gr.Dropdown(
+                            MATERIAL_TYPE_CHOICES,
+                            value="",
+                            label="材料类型",
+                            info="全流程可自动识别；单独生成材料时建议明确选择。",
+                        )
 
                     gr.HTML('<div class="szt-tip"><strong>隐私提示</strong>：请勿输入身份证号、密码等敏感信息。申报材料仅作为辅助初稿，提交前请人工复核。</div>')
                     with gr.Row():
@@ -497,26 +851,48 @@ def create_interface():
                             )
                         with gr.Tab("完整运行数据"):
                             raw_output = gr.JSON(value={}, label="JSON 调试输出", elem_classes=["json-holder"])
+                        with gr.Tab("材料下载"):
+                            form_downloads = gr.File(
+                                label="生成文件",
+                                file_count="multiple",
+                                interactive=False,
+                            )
 
             gr.HTML('<div class="szt-footer">赛智通 SaiZhiTong · 大学生科研竞赛多智能体辅助系统</div>')
 
-        form_components = [user_input, task_type, data_source, major, grade, interests, skills, source_url, notification_text, project_json]
-        run_button.click(fn=run_main_agent, inputs=form_components, outputs=[status, final_answer, agent_statuses, raw_output])
+        form_components = [user_input, task_type, data_source, major, grade, interests, skills, source_url, notification_text, project_json, material_type]
+        run_button.click(fn=run_main_agent_with_downloads, inputs=form_components, outputs=[status, final_answer, agent_statuses, raw_output, form_downloads])
         demo_button.click(fn=load_demo, outputs=form_components)
         data_source.change(
             fn=update_source_inputs,
             inputs=[data_source],
             outputs=[web_source_group, text_source_group],
         )
-        clear_button.add(form_components + [status, final_answer, agent_statuses, raw_output])
+        clear_button.add(form_components + [status, final_answer, agent_statuses, raw_output, form_downloads])
+
+        chat_outputs = [chat_input, chatbot, chat_state, chat_status, chat_answer, chat_agent_statuses, chat_raw_output, chat_downloads]
+        chat_send.click(
+            fn=chat_submit,
+            inputs=[chat_input, chatbot, chat_state],
+            outputs=chat_outputs,
+        )
+        chat_input.submit(
+            fn=chat_submit,
+            inputs=[chat_input, chatbot, chat_state],
+            outputs=chat_outputs,
+        )
+        chat_clear.click(
+            fn=clear_chat,
+            outputs=[chatbot, chat_state, chat_status, chat_answer, chat_agent_statuses, chat_raw_output, chat_downloads],
+        )
 
     return demo, theme, gradio_major
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="运行赛智通 Gradio 演示系统。")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "7860")))
     parser.add_argument("--share", action="store_true")
     return parser.parse_args()
 
