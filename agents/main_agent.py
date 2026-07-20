@@ -455,7 +455,33 @@ If no agent is needed, selected_agents must be empty.
             *original_input.get("history", []),
             {"role": self.agent_name, "event": f"dispatch_to_{agent_key}"},
         ]
+        if agent_key == "info_collect":
+            agent_input["input_data"] = self._adapt_info_collect_input(original_input)
         return agent_input
+
+    def _adapt_info_collect_input(self, original_input: dict[str, Any]) -> dict[str, Any]:
+        """Map the web form fields to InfoCollectAgent without changing its API."""
+        payload = dict(original_input.get("input_data", {}))
+        if payload.get("sources"):
+            return payload
+
+        data_source = str(payload.get("data_source", "")).lower()
+        source_url = str(payload.get("source_url", "")).lower()
+        sources = []
+
+        if data_source in {"web", "mixed"} and (
+            not source_url or "saikr.com" in source_url
+        ):
+            sources.append("saikr")
+        if data_source in {"upload", "mixed"} and payload.get("file_paths"):
+            sources.append("local_file")
+
+        if sources:
+            payload["sources"] = sources
+        if "saikr" in sources and not payload.get("keywords"):
+            interests = original_input.get("user_profile", {}).get("interests", [])
+            payload["keywords"] = interests or [str(original_input.get("user_input", ""))]
+        return payload
 
     def _normalize_agent_output(self, agent_key: str, task_id: str, result: Any) -> dict[str, Any]:
         if not isinstance(result, dict):
