@@ -467,6 +467,10 @@ If no agent is needed, selected_agents must be empty.
             agent_input["input_data"] = self._adapt_recommendation_input(
                 original_input, shared_context
             )
+        elif agent_key == "material":
+            agent_input["input_data"] = self._adapt_material_input(
+                original_input, shared_context
+            )
         return agent_input
 
     def _adapt_info_collect_input(self, original_input: dict[str, Any]) -> dict[str, Any]:
@@ -554,6 +558,66 @@ If no agent is needed, selected_agents must be empty.
         projects = payload.get("projects")
         if isinstance(projects, list) and projects:
             payload["structured_items"] = projects
+        return payload
+
+    def _adapt_material_input(
+        self,
+        original_input: dict[str, Any],
+        shared_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build MaterialAgent input from explicit or recommended project data."""
+        payload = dict(original_input.get("input_data", {}))
+        payload.setdefault("user_profile", original_input.get("user_profile", {}))
+
+        project_info = payload.get("project_info")
+        if isinstance(project_info, dict) and project_info:
+            project_info = dict(project_info)
+            project_info.setdefault(
+                "project_name",
+                project_info.get("title") or project_info.get("name", ""),
+            )
+            payload["project_info"] = project_info
+            return payload
+
+        structured_items = payload.get("structured_items")
+        if not isinstance(structured_items, list) or not structured_items:
+            extract_result = shared_context.get("info_extract_result", {})
+            structured_items = (
+                extract_result.get("structured_items", [])
+                if isinstance(extract_result, dict)
+                else []
+            )
+
+        selected_title = ""
+        recommendation_result = shared_context.get("recommendation_result", {})
+        if isinstance(recommendation_result, dict):
+            recommendations = recommendation_result.get("recommendations", [])
+            if recommendations:
+                selected_title = str(recommendations[0].get("title", ""))
+
+        selected = None
+        for item in structured_items or []:
+            if isinstance(item, dict) and (
+                not selected_title or str(item.get("title", "")) == selected_title
+            ):
+                selected = dict(item)
+                break
+
+        if selected is None:
+            projects = payload.get("projects", [])
+            if isinstance(projects, list) and projects and isinstance(projects[0], dict):
+                selected = dict(projects[0])
+
+        if selected is not None:
+            title = selected.get("project_name") or selected.get("title") or selected_title
+            selected["project_name"] = str(title or "")
+            payload["project_info"] = selected
+            payload.setdefault("competition_info", {
+                "competition_name": str(selected.get("title", "")),
+                "competition_type": str(selected.get("type", "")),
+                "deadline": str(selected.get("deadline", "")),
+                "organizer": str(selected.get("organizer", "")),
+            })
         return payload
 
     def _normalize_agent_output(self, agent_key: str, task_id: str, result: Any) -> dict[str, Any]:

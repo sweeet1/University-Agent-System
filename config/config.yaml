@@ -24,6 +24,10 @@ agent:
   max_retry: 3
   info_extract:
     prompt_file: ./config/extraction_prompt.yaml
+  material_agent:
+    default_style: formal
+    default_language: zh-CN
+    prompt_config_path: ./config/material_prompts.yaml
 
 recommendation:
   hard_constraints: true
