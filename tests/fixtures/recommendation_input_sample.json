@@ -1,0 +1,503 @@
+{
+  "task_id": "task_rec_sample_001",
+  "user_input": "我是温州大学计算机专业大二学生，有数学建模省一等奖经历，帮我推荐适合的竞赛项目",
+  "task_type": "recommendation",
+  "user_profile": {
+    "nickname": "张三",
+    "school": "温州大学",
+    "major": "计算机科学与技术",
+    "enrollment_year": 2024,
+    "education_level": "本科",
+    "gpa": 3.6,
+    "skills": [
+      "Python",
+      "机器学习",
+      "数据分析"
+    ],
+    "interests": [
+      "人工智能",
+      "算法竞赛",
+      "数学建模"
+    ],
+    "awards": [
+      {
+        "competition_name": "全国大学生数学建模",
+        "level": "省级",
+        "award_name": "一等奖",
+        "year": 2025
+      }
+    ],
+    "competition_experience": [
+      "全国大学生数学建模 省一等奖"
+    ],
+    "research_experience": [
+      "参与导师NLP课题一学期"
+    ],
+    "available_time": "2026年7月-9月",
+    "team_status": "已有团队"
+  },
+  "context": {},
+  "input_data": {
+    "structured_items": [
+      {
+        "title": "第二届“东方创新杯”全国大学生数学建模大赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-26",
+        "registration_time": "即日起-2026年7月26日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "数学基础理论",
+            "建模方法原理"
+          ],
+          "team_requirement": "不限",
+          "tags": [
+            "数学建模",
+            "数学竞赛"
+          ],
+          "category": "数学"
+        },
+        "reward": "初赛一等奖、二等奖、三等奖、优秀奖；决赛特等奖、一等奖、二等奖、三等奖；900元奖金池；电子+纸质版证书；优秀参赛选手可获得赛事推荐信并入选人才库；精美证书外壳；指导老师证书",
+        "organizer": "华夏文化促进会文化和科技融合工作委员会",
+        "source_url": "https://www.saikr.com/vse/SXJM",
+        "summary": "第二届“东方创新杯”全国大学生数学建模大赛是由华夏文化促进会文化和科技融合工作委员会主办的全国性学科竞赛。面向国内外在校大学生（包括研究生、本科生、高职高专学生）及社会人士，报名截止至2026年7月26日。大赛设有初赛和决赛，获奖者将获得奖金、证书及推荐信等奖励。"
+      },
+      {
+        "title": "2026年第七届“华数杯”大学生数学建模竞赛",
+        "type": "学科竞赛",
+        "deadline": "2026-08-07",
+        "registration_time": "从即日起至2026年8月7日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科"
+          ],
+          "required_skills": [
+            "数学建模",
+            "计算机技术"
+          ],
+          "team_requirement": "组队",
+          "tags": [
+            "数学建模",
+            "全国性竞赛"
+          ],
+          "category": "数学建模"
+        },
+        "reward": "全国一等奖（不超过报名队数的10%，荣誉证书）、全国二等奖（不超过报名队数的20%，荣誉证书）、全国三等奖（不超过报名队数的30%，荣誉证书）、优秀奖（若干支，荣誉证书）、优秀指导老师、优秀组织单位",
+        "organizer": "天津市未来与预测科学研究会、华数杯大学生数学建模竞赛组委会",
+        "source_url": "https://www.saikr.com/vse/chinamcm26",
+        "summary": "2026年第七届“华数杯”大学生数学建模竞赛是一项全国性学科竞赛，旨在培养大学生的创新意识和运用数学方法及计算机技术解决实际问题的能力。竞赛面向全国专科、本科及研究生，以1-3名大学生组队形式参赛，报名截止时间为2026年8月7日。竞赛设有全国一、二、三等奖及优秀奖，并提供专家辅导和详细论文评语。"
+      },
+      {
+        "title": "2026 年 “高教社杯” 全国大学生数学建模竞赛",
+        "type": "学科竞赛",
+        "deadline": "2026-08-31",
+        "registration_time": "2026年8月31日20:00前（多数赛区）",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科"
+          ],
+          "required_skills": [],
+          "team_requirement": "组队",
+          "tags": [
+            "数学建模",
+            "全国性竞赛"
+          ],
+          "category": "数学"
+        },
+        "reward": "全国一等奖约0.5%，全国二等奖约2%-3%，成功参赛奖；赛区一、二、三等奖；优秀指导教师奖、优秀组织奖",
+        "organizer": "中国工业与应用数学学会",
+        "source_url": "https://www.saikr.com/vse/58394",
+        "summary": "2026年“高教社杯”全国大学生数学建模竞赛是一项面向全国本科及高职高专在校生的学科竞赛，旨在培养创新能力和团队协作精神。参赛者需组队（1-3人）报名，截止时间为2026年8月31日20:00。竞赛设全国奖和赛区奖，获奖比例较高，优秀作品有机会获得国家级荣誉。"
+      },
+      {
+        "title": "2026年第六届天府杯全国大学生数学建模竞赛",
+        "type": "学科竞赛",
+        "deadline": "2026-08-20",
+        "registration_time": "从即日起至北京时间2026年8月20日12:00（周四）",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "数学建模"
+          ],
+          "team_requirement": "组队",
+          "tags": [
+            "数学建模",
+            "全国性竞赛"
+          ],
+          "category": "数学建模"
+        },
+        "reward": "天府特等奖1支，奖金888元；特等奖约1-4支，奖金500元；一等奖约5%；二等奖约15%；三等奖约30%；优秀奖若干。获奖证书冠名为“天府杯全国大学生数学建模竞赛”荣誉证书，加盖主办单位公章。",
+        "organizer": "四川省科学学与科技政策研究会、成都市航空航天学会",
+        "source_url": "https://www.saikr.com/vse/TFB2026",
+        "summary": "2026年第六届天府杯全国大学生数学建模竞赛是一项全国性学科竞赛，面向高等院校、研究院所等全日制在读生（层次不限）。报名截止时间为2026年8月20日12:00。竞赛设有多项奖金及荣誉证书，由四川省科学学与科技政策研究会和成都市航空航天学会联合主办。"
+      },
+      {
+        "title": "2026年大学生“麟创杯”数学建模竞赛",
+        "type": "学科竞赛",
+        "deadline": "2026-08-22",
+        "registration_time": "即日起-2026年8月22日23:59",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "数学分析",
+            "数学建模"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "数学建模",
+            "数学竞赛"
+          ],
+          "category": "数学"
+        },
+        "reward": "一等奖（90-100分）、二等奖（80-89分）、三等奖（60-79分）、优秀奖（成绩不为0且无违规作弊行为即可获得），均可获得电子版和纸质版证书。",
+        "organizer": "中国技术市场协会数智技术专业委员会、中创世技科技推广（北京）有限公司",
+        "source_url": "https://www.saikr.com/vse/LCBSM",
+        "summary": "2026年大学生“麟创杯”数学建模竞赛是一项面向全国在校大学生（包括研究生、本科生、高职高专学生）的个人赛，专业不限。报名截止时间为2026年8月22日23:59。竞赛设有一、二、三等奖及优秀奖，获奖者可获得电子版和纸质版证书。"
+      },
+      {
+        "title": "2026年全国大学生数学建模竞赛校内选拔赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-15",
+        "registration_time": "报名截止：2026年7月15日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科"
+          ],
+          "required_skills": [
+            "数学基础",
+            "计算机编程能力"
+          ],
+          "team_requirement": "组队",
+          "tags": [
+            "数学建模",
+            "数学竞赛"
+          ],
+          "category": "数学"
+        },
+        "reward": "特等奖1队奖金3000元，一等奖3队奖金2000元，二等奖5队奖金1000元，三等奖10队",
+        "organizer": "温州大学教务处、数学与统计学院",
+        "source_url": "",
+        "summary": "2026年全国大学生数学建模竞赛校内选拔赛由温州大学主办，面向全校在读本科生，要求具有数学基础和编程能力。报名截止日期为2026年7月15日，需组队参赛，设特等奖、一、二、三等奖及奖金。"
+      },
+      {
+        "title": "2026年中国大学生计算机博弈大赛暨第二十届中国计算机博弈锦标赛",
+        "type": "学科竞赛",
+        "deadline": "2026-05-15",
+        "registration_time": "2026年4月19日至2026年5月15日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [],
+          "required_skills": [],
+          "team_requirement": "不限",
+          "tags": [
+            "计算机",
+            "博弈"
+          ],
+          "category": "计算机"
+        },
+        "reward": "unknown",
+        "organizer": "中国人工智能学会",
+        "source_url": "https://www.saikr.com//computergames2026",
+        "summary": "2026年中国大学生计算机博弈大赛暨第二十届中国计算机博弈锦标赛是一项全国性学科竞赛，面向全国大学生，报名截止日期为2026年5月15日。该赛事由计算机博弈相关主题组成，旨在促进计算机博弈技术发展。"
+      },
+      {
+        "title": "（城市联赛）计算机素养赛道",
+        "type": "学科竞赛",
+        "deadline": "2026-08-07",
+        "registration_time": "即日起——2026年8月7日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士"
+          ],
+          "required_skills": [
+            "C语言",
+            "C++",
+            "Python",
+            "Java"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "计算机",
+            "算法",
+            "编程"
+          ],
+          "category": "计算机"
+        },
+        "reward": "一等奖不超过参赛人数的5%，二等奖不超过15%，三等奖不超过25%，优秀奖完整参赛即可领取；冠军奖金300元，亚军奖金200元，季军奖金100元。",
+        "organizer": "大连市计算机学会、苏州市计算机学会、天津市计算机学会",
+        "source_url": "https://www.saikr.com/vse/CLComputer2026",
+        "summary": "（城市联赛）计算机素养赛道是一项全国性计算机学科竞赛，面向普通高等院校、高职院校、本、专科在校大学生及研究生，专业不限。报名截止时间为2026年8月7日，竞赛设有一、二、三等奖及优秀奖，并提供冠军、亚军、季军奖金。"
+      },
+      {
+        "title": "2026年第二届计算机能力竞赛暨城市联赛（夏季赛）——算法编程赛道",
+        "type": "学科竞赛",
+        "deadline": "2026-08-14",
+        "registration_time": "即日起——2026年8月14日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "C++",
+            "JAVA",
+            "C语言",
+            "Python",
+            "算法"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "算法编程",
+            "ACM赛制",
+            "计算机能力"
+          ],
+          "category": "计算机"
+        },
+        "reward": "一等奖不超过参赛人数的5%，二等奖不超过15%，三等奖不超过25%，优秀奖完整参赛即可领取。冠军一名奖金300元，亚军二名奖金200元，季军三名奖金100元。",
+        "organizer": "大连市计算机学会、苏州市计算机学会、天津市计算机学会",
+        "source_url": "https://www.saikr.com/vse/CLAlgorithmp2026",
+        "summary": "2026年第二届计算机能力竞赛暨城市联赛（夏季赛）——算法编程赛道，面向全国本、专科及研究生，专业不限。报名截止2026年8月14日，线上考试，ACM赛制，支持多种编程语言，设有一、二、三等奖及优秀奖，并有额外奖金福利。"
+      },
+      {
+        "title": "2026年大学生统计科学与算法编程挑战赛——计算机组成原理赛道",
+        "type": "学科竞赛",
+        "deadline": "2026-09-18",
+        "registration_time": "即日起——2026年9月18日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "计算机组成原理"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "统计科学",
+            "算法编程",
+            "计算机组成原理"
+          ],
+          "category": "计算机"
+        },
+        "reward": "一等奖（90-100分）、二等奖（80-89分）、三等奖（60-79分）、优秀奖（成功参赛并提交答题结果），均颁发电子版+纸质版证书。",
+        "organizer": "中国现场统计研究会统计综合评价研究分会、山东省应用统计学会",
+        "source_url": "https://www.saikr.com/vse/2026TJKXCOA",
+        "summary": "2026年大学生统计科学与算法编程挑战赛——计算机组成原理赛道是一项全国性个人学科竞赛，面向普通高等院校、高职院校、独立学院的本、专科在校大学生及研究生，专业不限。报名截止时间为2026年9月18日，比赛形式为线上50道单选题，考察计算机组成原理知识，成绩90分以上可获一等奖，并提供免费题库练习。"
+      },
+      {
+        "title": "2026年大学生统计科学与算法编程挑战赛——计算机网络赛道",
+        "type": "学科竞赛",
+        "deadline": "2026-10-16",
+        "registration_time": "即日起——2026年10月16日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "计算机网络"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "统计科学",
+            "算法编程",
+            "计算机网络"
+          ],
+          "category": "学科竞赛"
+        },
+        "reward": "一等奖（90-100分）、二等奖（80-89分）、三等奖（60-79分）、优秀奖（60分以下且不为0，无违规行为），均颁发电子版和纸质版证书。",
+        "organizer": "中国现场统计研究会统计综合评价研究分会、山东省应用统计学会",
+        "source_url": "https://www.saikr.com/vse/2026TJKXCN",
+        "summary": "2026年大学生统计科学与算法编程挑战赛——计算机网络赛道是一项全国性学科竞赛，面向普通高等院校、高职院校、二级学院、独立学院的本、专科在校大学生及研究生，专业不限。报名截止时间为2026年10月16日，竞赛为个人赛，线上进行，考察计算机网络相关知识，设有一、二、三等奖及优秀奖，获奖者均可获得证书。"
+      },
+      {
+        "title": "2026年全国高校商务英语阅读大赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-11",
+        "registration_time": "即日起至2026年7月11日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科"
+          ],
+          "required_skills": [
+            "商务英语阅读"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "商务英语",
+            "阅读",
+            "英语竞赛"
+          ],
+          "category": "外语"
+        },
+        "reward": "初赛设特等奖、一等奖、二等奖、三等奖，获奖总人数占初赛参赛总人数的65%；决赛设特等奖（前35%）和一等奖（后65%）。获奖选手可免费获得电子版+纸质版获奖证书，未获奖选手可获得电子版参赛证明。成绩60分以上可申领商务英语或语言服务师专业技能证书。",
+        "organizer": "中国对外贸易经济合作企业协会国际商务与语言服务工作委员会",
+        "source_url": "https://new.saikr.com/vse/SYR2026",
+        "summary": "2026年全国高校商务英语阅读大赛面向各地本科及高职高专院校在校学生，不限专业。报名截止时间为2026年7月11日，初赛于7月12日线上闭卷进行。获奖总人数占初赛参赛总人数的65%，并可申领专业技能证书。"
+      },
+      {
+        "title": "2026第五届UNIPP大学生英语应用大赛（秋季赛）",
+        "type": "学科竞赛",
+        "deadline": "2026-12-20",
+        "registration_time": "即日起至2026年12月20日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [],
+          "team_requirement": "单人",
+          "tags": [
+            "英语",
+            "词汇",
+            "阅读",
+            "翻译"
+          ],
+          "category": "英语"
+        },
+        "reward": "全国赛设特等奖、一等奖、二等奖、三等奖及优秀奖，按组别分别排名。特等奖挑战赛特等奖不超过参赛人数的5%。获奖选手有机会获得实习证明、加入实用人才库、参加线下颁奖典礼及大型活动志愿者。",
+        "organizer": "UNIPP大学生英语应用系列大赛组委会",
+        "source_url": "https://new.saikr.com/vse/UNIPPNC2026",
+        "summary": "2026第五届UNIPP大学生英语应用大赛（秋季赛）是一项全国性英语学科竞赛，由UNIPP大学生英语应用系列大赛组委会主办。面向国内外各高校的本科、专科及研究生等所有年级大学生（年满18岁），专业不限，报名截止至2026年12月20日。大赛设词汇、阅读、翻译三个赛道，获奖选手可获荣誉证书、实习机会及加入实用人才库等奖励。"
+      },
+      {
+        "title": "第三届大学生外交英语阅读大赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-18",
+        "registration_time": "即日起-2026年7月18日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "英语阅读",
+            "外交知识"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "外交英语",
+            "阅读",
+            "英语竞赛"
+          ],
+          "category": "外语"
+        },
+        "reward": "初赛设一、二、三等奖及优秀奖，获电子版+纸质证书；决赛设特等奖、一、二、三等奖及优秀奖，特等奖前三名各获300元、200元、100元奖金及电子版+纸质证书。",
+        "organizer": "中国西部研究与发展促进会教育工作委员会",
+        "source_url": "https://www.saikr.com/vse/DESC-Read-Third?ces=XB34579",
+        "summary": "第三届大学生外交英语阅读大赛由中国西部研究与发展促进会教育工作委员会主办，面向在校大学生（含研究生、本科生、高职高专），不限专业。报名截止时间为2026年7月18日，线上考试，获奖证书相对易获得，决赛特等奖前三名有奖金。"
+      },
+      {
+        "title": "第四届“一带一路”全国大学生英语翻译大赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-28",
+        "registration_time": "即日起—2026年7月28日",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "英语翻译"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "英语",
+            "翻译",
+            "一带一路"
+          ],
+          "category": "外语"
+        },
+        "reward": "大赛奖金300元（特等奖第一名），特等奖、一、二、三等奖及优秀奖，师生同奖（电子版教师感谢信），精美证书外壳（特等奖前十名）",
+        "organizer": "中国欧洲经济技术合作协会一带一路经济文化工作委员会",
+        "source_url": "https://www.saikr.com/vse/2026/YDYL/Translate?ces=rm",
+        "summary": "第四届“一带一路”全国大学生英语翻译大赛是一项面向全国研究生、本科生及高职院校在校学生的英语翻译竞赛。报名截止时间为2026年7月28日，参赛者需独立完成译文并提交PDF文件。大赛设特等奖、一、二、三等奖及优秀奖，特等奖第一名可获得300元奖金，并提供师生同奖及精美证书外壳等激励。"
+      },
+      {
+        "title": "第四届“BETT杯”全国大学生英语语法大赛",
+        "type": "学科竞赛",
+        "deadline": "2026-07-18",
+        "registration_time": "2026年3月3日 00:00:00 至 2026年7月18日 22:00:00",
+        "requirements": {
+          "target_majors": [],
+          "target_grades": [],
+          "target_education": [
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "required_skills": [
+            "英语语法"
+          ],
+          "team_requirement": "单人",
+          "tags": [
+            "英语",
+            "语法",
+            "全国性"
+          ],
+          "category": "外语"
+        },
+        "reward": "全国特、一、二、三、优秀奖及参赛证明；每场次综合前五名可获1100元奖学金；师生同奖，优秀指导教师证书，组织单位可获优秀组织单位证书及荣誉奖杯，优秀组织者有机会获得“中国城商联外研分会”入会资格。",
+        "organizer": "中国城市商业网点建设管理联合会国际商务交流与外语研究分会",
+        "source_url": "https://www.saikr.com/vse/Bett-Grammar-Fourth",
+        "summary": "第四届“BETT杯”全国大学生英语语法大赛是一项全国性英语学科竞赛，面向全国高校学生及英语爱好者，报名截止于2026年7月18日。大赛设有多项奖项及1100元奖学金，师生同奖，优秀组织单位可获入会资格。"
+      }
+    ],
+    "recommendation_rules": {
+      "top_n": 3
+    }
+  },
+  "history": [],
+  "required_output": "markdown",
+  "metadata": {
+    "source": "sample_for_recommendation_agent"
+  }
+}

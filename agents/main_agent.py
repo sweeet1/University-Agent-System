@@ -161,7 +161,9 @@ class MainAgent:
         if task_type in {"extract", "info_extract"}:
             return ["info_extract"]
         if task_type in {"recommend", "recommendation"}:
-            return ["info_collect", "recommendation"]
+            if payload.get("structured_items") or payload.get("projects"):
+                return ["recommendation"]
+            return ["info_collect", "info_extract", "recommendation"]
         if task_type in {"material", "generate_material"}:
             return ["material"]
         if task_type in {"full_process", "application_assistant", "mvp_demo"}:
@@ -312,8 +314,8 @@ Required JSON schema:
 
 Task type must be one of: info_collect, info_extract, recommendation, material, full_process, qa, unknown.
 Only use these agent names: info_collect, info_extract, recommendation, material.
-If the user wants project recommendation, select info_collect and recommendation.
-If the user wants recommendation and application materials, select info_collect, recommendation, and material.
+If the user wants project recommendation from raw sources, select info_collect, info_extract, and recommendation.
+If the user wants recommendation and application materials from raw sources, select info_collect, info_extract, recommendation, and material.
 If the user provides notice text and asks to extract fields, select info_extract.
 If the user provides notice text and wants recommendation, select info_extract and recommendation.
 If the user wants complete application assistance, select info_collect, recommendation, material, and include info_extract only when notice text exists.
@@ -461,6 +463,10 @@ If no agent is needed, selected_agents must be empty.
             agent_input["input_data"] = self._adapt_info_extract_input(
                 original_input, shared_context
             )
+        elif agent_key == "recommendation":
+            agent_input["input_data"] = self._adapt_recommendation_input(
+                original_input, shared_context
+            )
         return agent_input
 
     def _adapt_info_collect_input(self, original_input: dict[str, Any]) -> dict[str, Any]:
@@ -530,6 +536,26 @@ If no agent is needed, selected_agents must be empty.
                 payload["raw_items"] = raw_items
         return payload
 
+    def _adapt_recommendation_input(
+        self,
+        original_input: dict[str, Any],
+        shared_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Provide structured items produced by InfoExtractAgent."""
+        payload = dict(original_input.get("input_data", {}))
+        if payload.get("structured_items"):
+            return payload
+
+        extract_result = shared_context.get("info_extract_result", {})
+        if isinstance(extract_result, dict) and extract_result.get("structured_items"):
+            payload["structured_items"] = extract_result["structured_items"]
+            return payload
+
+        projects = payload.get("projects")
+        if isinstance(projects, list) and projects:
+            payload["structured_items"] = projects
+        return payload
+
     def _normalize_agent_output(self, agent_key: str, task_id: str, result: Any) -> dict[str, Any]:
         if not isinstance(result, dict):
             return self._build_output(
@@ -559,10 +585,10 @@ If no agent is needed, selected_agents must be empty.
         return output
 
     def _select_full_process_agents(self, payload: dict[str, Any]) -> list[str]:
-        selected = ["info_collect"]
-        if payload.get("notification_text") or payload.get("raw_text"):
-            selected.append("info_extract")
-        selected.extend(["recommendation", "material"])
+        if payload.get("structured_items") or payload.get("projects"):
+            selected = ["recommendation", "material"]
+        else:
+            selected = ["info_collect", "info_extract", "recommendation", "material"]
         return selected
 
     def _build_final_answer(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:

@@ -24,3 +24,23 @@ agent:
   max_retry: 3
   info_extract:
     prompt_file: ./config/extraction_prompt.yaml
+
+recommendation:
+  hard_constraints: true
+  hard_major_min_score: 50
+  weights:
+    interest_score: 0.30
+    ability_score: 0.25
+    deadline_score: 0.18
+    team_score: 0.12
+    grade_score: 0.10
+    major_score: 0.05
+  level_thresholds:
+    S: 80
+    A: 65
+    B: 50
+    C: 0
+  caps:
+    grade_score_below: 40
+    ability_score_below: 30
+    max_level: B
