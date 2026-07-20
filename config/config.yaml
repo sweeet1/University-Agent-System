@@ -18,3 +18,9 @@ storage:
   output_path: ./data/output
   temp_path: ./data/temp
   log_path: ./logs
+
+agent:
+  timeout: 60
+  max_retry: 3
+  info_extract:
+    prompt_file: ./config/extraction_prompt.yaml

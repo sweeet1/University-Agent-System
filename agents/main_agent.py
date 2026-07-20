@@ -457,6 +457,10 @@ If no agent is needed, selected_agents must be empty.
         ]
         if agent_key == "info_collect":
             agent_input["input_data"] = self._adapt_info_collect_input(original_input)
+        elif agent_key == "info_extract":
+            agent_input["input_data"] = self._adapt_info_extract_input(
+                original_input, shared_context
+            )
         return agent_input
 
     def _adapt_info_collect_input(self, original_input: dict[str, Any]) -> dict[str, Any]:
@@ -481,6 +485,49 @@ If no agent is needed, selected_agents must be empty.
         if "saikr" in sources and not payload.get("keywords"):
             interests = original_input.get("user_profile", {}).get("interests", [])
             payload["keywords"] = interests or [str(original_input.get("user_input", ""))]
+        return payload
+
+    def _adapt_info_extract_input(
+        self,
+        original_input: dict[str, Any],
+        shared_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Provide raw items from collection results or pasted notice text."""
+        payload = dict(original_input.get("input_data", {}))
+        if payload.get("raw_items"):
+            return payload
+
+        collect_result = shared_context.get("info_collect_result", {})
+        if isinstance(collect_result, dict) and collect_result.get("raw_items"):
+            payload["raw_items"] = collect_result["raw_items"]
+            return payload
+
+        raw_text = (
+            payload.get("notification_text")
+            or payload.get("raw_text")
+            or payload.get("raw_project_text")
+        )
+        if raw_text:
+            payload["raw_items"] = [{
+                "title": "",
+                "url": payload.get("source_url", ""),
+                "source": payload.get("data_source", "user_input"),
+                "raw_text": str(raw_text),
+                "publish_date": "",
+                "collected_at": "",
+            }]
+            return payload
+
+        projects = payload.get("projects")
+        if isinstance(projects, list):
+            raw_items = []
+            for project in projects:
+                if isinstance(project, dict):
+                    item = dict(project)
+                    item.setdefault("raw_text", json.dumps(project, ensure_ascii=False))
+                    raw_items.append(item)
+            if raw_items:
+                payload["raw_items"] = raw_items
         return payload
 
     def _normalize_agent_output(self, agent_key: str, task_id: str, result: Any) -> dict[str, Any]:
