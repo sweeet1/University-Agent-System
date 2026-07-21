@@ -67,6 +67,7 @@ class MaterialAgent:
         "innovation_contest_video_script",
         "innovation_contest_checklist",
         # 通用模板
+        "generic_personal_resume",
         "generic_application_form",
         "generic_project_report",
         "generic_ppt",
@@ -694,6 +695,14 @@ class MaterialAgent:
         variables["user_name"] = user_profile.get("name", "")
         variables["user_major"] = user_profile.get("major", "")
         variables["user_grade"] = user_profile.get("grade", "")
+        variables["user_college"] = user_profile.get("college", "")
+        variables["user_phone"] = user_profile.get("phone", "")
+        variables["user_email"] = user_profile.get("email", "")
+        variables["user_skills"] = self._format_value(user_profile.get("skills", []))
+        variables["user_interests"] = self._format_value(user_profile.get("interests", []))
+        variables["user_experience"] = self._format_value(
+            user_profile.get("competition_experience", user_profile.get("experience", []))
+        )
 
         # ---- 竞赛信息映射 ----
         variables["competition_name"] = competition_info.get("competition_name", "")

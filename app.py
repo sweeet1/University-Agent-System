@@ -60,6 +60,7 @@ MATERIAL_TYPE_CHOICES = [
     ("互联网+ / 创新创业申报表", "innovation_contest_application_form"),
     ("互联网+ / 创新创业材料清单", "innovation_contest_checklist"),
     ("通用申报表", "generic_application_form"),
+    ("竞赛报名个人简历", "generic_personal_resume"),
     ("通用项目报告", "generic_project_report"),
     ("通用答辩 PPT", "generic_ppt"),
     ("通用准备进度表", "generic_schedule"),
@@ -606,8 +607,9 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
             state["project_name"] = fact_text.split(separator, 1)[1].strip()
 
     material_map = {
-        "报名表": "generic_application_form", "报名简历": "generic_application_form",
-        "简历": "generic_application_form", "计划书": "innovation_contest_business_plan",
+        "报名简历": "generic_personal_resume", "个人简历": "generic_personal_resume",
+        "简历": "generic_personal_resume", "报名表": "generic_application_form",
+        "计划书": "innovation_contest_business_plan",
         "PPT": "generic_ppt", "进度表": "generic_schedule", "清单": "challenge_cup_grand_checklist",
     }
     for keyword, material_type in material_map.items():
@@ -764,7 +766,7 @@ def chat_submit(message, history, state):
         history.append({"role": "assistant", "content": answer})
         return "", history, state, build_status_html("success", control.get("message")), answer, [], control, _result_downloads(state.get("last_result", {}))
     followup = (
-        main_agent.handle_followup(message, state["last_result"])
+        main_agent.handle_followup(message, state["last_result"], state)
         if state.get("last_result")
         else None
     )

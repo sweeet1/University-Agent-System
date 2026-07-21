@@ -134,12 +134,21 @@ class MainAgent:
         self,
         user_input: str,
         previous_result: dict[str, Any],
+        conversation_state: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Handle a conversational follow-up against a previous recommendation result.
 
         Returning ``None`` means the message is not a supported follow-up and should
         continue through the normal task-planning flow.
         """
+        state = conversation_state or {}
+        if (
+            state.get("intent") in {"material", "full_process"}
+            and not state.get("project_name")
+        ):
+            # The UI is waiting for the user to select which recommendation
+            # should be passed to MaterialAgent. Ordinals belong to that flow.
+            return None
         if not self._is_competition_detail_request(user_input):
             return None
 

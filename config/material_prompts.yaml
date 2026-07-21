@@ -1703,6 +1703,78 @@ challenge_cup_business_checklist:
 # 类型三：其他竞赛通用模板 — 6 种模板
 # ============================================================
 
+generic_personal_resume:
+  name: "竞赛报名个人简历"
+  material_type: "generic_personal_resume"
+  description: "用于竞赛报名和参赛申请的个人简历，可在 Word 中继续编辑"
+  word_limit: "个人简介建议300字以内"
+
+  system: |
+    你是大学生竞赛报名材料顾问。请根据用户已经提供的真实信息，生成一份适合竞赛报名的中文个人简历。
+    不得虚构学校、奖项、项目经历、联系方式或技能熟练度。缺少的信息必须明确写为“[待补充]”。
+    内容应突出与目标竞赛相关的专业背景、技能、项目或竞赛经历和参赛动机，语言正式、简洁、便于用户在 Word 中修改。
+
+  user_template: |
+    请为以下用户生成面向“{competition_name}”的竞赛报名个人简历：
+
+    ## 用户信息
+    - 姓名：{user_name}
+    - 学院：{user_college}
+    - 专业：{user_major}
+    - 年级：{user_grade}
+    - 电话：{user_phone}
+    - 邮箱：{user_email}
+    - 技能：{user_skills}
+    - 兴趣方向：{user_interests}
+    - 竞赛或项目经历：{user_experience}
+
+    ## 目标竞赛
+    - 竞赛名称：{competition_name}
+    - 竞赛类型：{competition_type}
+    - 竞赛级别：{competition_level}
+    - 主办方：{organizer}
+    - 截止日期：{deadline}
+
+    请按以下结构输出。未知信息保留“[待补充]”，不要猜测：
+    1. 基本信息
+    2. 教育背景
+    3. 专业技能
+    4. 项目与竞赛经历
+    5. 与目标竞赛的匹配优势
+    6. 参赛动机与目标
+    7. 信息补充清单
+
+  output_sections:
+    - section_id: "basic_info"
+      title: "基本信息"
+    - section_id: "education"
+      title: "教育背景"
+    - section_id: "skills"
+      title: "专业技能"
+    - section_id: "experience"
+      title: "项目与竞赛经历"
+    - section_id: "advantages"
+      title: "与目标竞赛的匹配优势"
+    - section_id: "motivation"
+      title: "参赛动机与目标"
+    - section_id: "missing_information"
+      title: "信息补充清单"
+
+  format_spec:
+    page_size: "A4"
+    recommended_pages: "1-2页"
+
+  checklist:
+    - "核对姓名、学校、学院、专业和联系方式"
+    - "补充可验证的项目、竞赛和获奖经历"
+    - "根据目标竞赛要求调整技能与经历顺序"
+    - "提交前删除所有“[待补充]”标记"
+
+  tips:
+    - "只保留与目标竞赛相关的经历和技能"
+    - "每项经历建议使用行动、任务、结果的表达方式"
+    - "所有奖项和成果必须真实可验证"
+
 generic_application_form:
   name: "通用申报书模板"
   material_type: "generic_application_form"
@@ -2261,6 +2333,9 @@ material_type_index:
     category: "互联网+系列"
 
   # 通用模板
+  generic_personal_resume:
+    name: "竞赛报名个人简历"
+    category: "通用模板"
   generic_application_form:
     name: "通用申报书"
     category: "通用模板"

@@ -105,6 +105,28 @@ def test_main_agent_adapts_recommended_project(tmp_path):
     assert adapted["competition_info"]["deadline"] == "2026-09-30"
 
 
+def test_personal_resume_template_generates_word_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("MATERIAL_TEST_MISSING_KEY", raising=False)
+    result = MaterialAgent(material_config(tmp_path)).run(standard_input({
+        "project_info": {"project_name": "算法程序设计赛"},
+        "competition_info": {
+            "competition_name": "算法程序设计赛",
+            "deadline": "2026-09-30",
+        },
+        "user_profile": {
+            "major": "计算机科学与技术",
+            "grade": "大三",
+            "skills": ["Python", "算法"],
+        },
+        "material_type": "generic_personal_resume",
+    }))
+
+    assert result["status"] == "success"
+    assert result["data"]["material_name"] == "竞赛报名个人简历"
+    path = Path(result["data"]["_saved_files"][0])
+    assert path.name == "算法程序设计赛_竞赛报名个人简历.docx"
+
+
 def test_main_agent_runs_material_end_to_end(tmp_path, monkeypatch):
     monkeypatch.delenv("MATERIAL_TEST_MISSING_KEY", raising=False)
     main_agent = MainAgent(config=material_config(tmp_path))

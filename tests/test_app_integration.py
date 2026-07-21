@@ -184,7 +184,7 @@ def test_chat_material_request_reuses_previous_recommendation():
     state = _update_chat_state(state, "给刚才推荐的项目生成报名简历")
 
     assert state["intent"] == "material"
-    assert state["material_type"] == "generic_application_form"
+    assert state["material_type"] == "generic_personal_resume"
     assert _next_chat_question(state) is None
     standard_input = _chat_standard_input(state, "给刚才推荐的项目生成报名简历")
     assert standard_input["input_data"]["project_info"]["project_name"] == "全国大学生人工智能竞赛"
@@ -215,11 +215,38 @@ def test_chat_material_transition_requires_selection_when_multiple_recommendatio
 
     state = _update_chat_state(state, "报名简历")
     assert _next_chat_question(state) is None
+    assert state["material_type"] == "generic_personal_resume"
     standard_input = _chat_standard_input(state, "报名简历")
     assert standard_input["task_type"] == "material"
     assert standard_input["input_data"]["project_info"]["project_name"] == "算法程序设计赛"
     assert standard_input["input_data"]["competition_info"]["deadline"] == "2026-09-30"
     assert MainAgent(config={}).select_agents(standard_input) == ["material"]
+
+
+def test_material_selection_ordinal_is_not_intercepted_as_detail_followup():
+    state = {
+        **new_chat_state(),
+        "intent": "material",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "material_type": "generic_personal_resume",
+        "last_result": {
+            "task_id": "recommendation-result",
+            "data": {"agent_results": [{"data": {"recommendations": [
+                {"title": "人工智能创新赛"},
+                {"title": "算法程序设计赛"},
+            ]}}]},
+        },
+    }
+    main_agent = MainAgent(config={})
+    assert main_agent.handle_followup("第二个", state["last_result"], state) is None
+
+    state = _update_chat_state(state, "第二个")
+    assert state["project_name"] == "算法程序设计赛"
+    assert _next_chat_question(state) is None
+    request = _chat_standard_input(state, "第二个")
+    assert request["task_type"] == "material"
+    assert MainAgent(config={}).select_agents(request) == ["material"]
 
 
 def test_chat_collection_routes_only_to_info_collect():

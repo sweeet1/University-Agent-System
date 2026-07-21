@@ -71,7 +71,9 @@ def run_conversation_turn(prompt: str) -> None:
     followup = None
     if previous_result:
         with st.spinner("正在读取竞赛信息并生成简介……"):
-            followup = main_agent.handle_followup(prompt, previous_result)
+            followup = main_agent.handle_followup(
+                prompt, previous_result, st.session_state.chat_state
+            )
     if followup:
         answer = followup.get("data", {}).get("final_answer", followup.get("message", ""))
         st.session_state.chat_state["turns"] = [
