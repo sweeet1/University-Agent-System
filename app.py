@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import os
+import re
 import threading
 from datetime import date
 from pathlib import Path
@@ -463,15 +464,98 @@ def initial_chat_messages() -> list[dict[str, str]]:
     return [{"role": "assistant", "content": CHAT_WELCOME}]
 
 
+def _recommendations_from_chat_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    result = state.get("last_result", {})
+    if not isinstance(result, dict):
+        return []
+    for agent_result in result.get("data", {}).get("agent_results", []):
+        recommendations = agent_result.get("data", {}).get("recommendations", [])
+        if isinstance(recommendations, list) and recommendations:
+            return [item for item in recommendations if isinstance(item, dict)]
+    return []
+
+
+def _detect_chat_intent(text: str, current_intent: str = "") -> str:
+    """Classify task intent with transition keywords taking precedence."""
+    if len(text) >= 80 and current_intent in {
+        "extract", "recommendation", "material", "full_process"
+    }:
+        # A long pasted notice is task input, not a request to switch agents.
+        return current_intent
+    strong_material_words = ["报名表", "简历", "计划书", "PPT", "材料清单"]
+    general_material_words = ["材料", "资料", "文档", "申报书"]
+    generation_words = ["生成", "制作", "撰写", "写一份", "准备", "帮我做", "想要"]
+    recommendation_words = ["推荐", "匹配", "适合", "筛选"]
+    extraction_words = ["提取", "抽取", "解析", "整理通知", "报名要求"]
+    collection_words = ["收集", "搜集", "查找", "搜索", "查询竞赛", "有哪些竞赛"]
+
+    wants_material = (
+        any(word in text for word in strong_material_words)
+        or (
+            any(word in text for word in general_material_words)
+            and any(word in text for word in generation_words)
+        )
+    )
+    wants_recommendation = any(word in text for word in recommendation_words)
+    requests_new_recommendation = wants_recommendation and not any(
+        phrase in text for phrase in ["刚才推荐", "之前推荐", "上面推荐", "推荐的"]
+    )
+    if "全流程" in text or (wants_material and requests_new_recommendation):
+        return "full_process"
+    if wants_material:
+        return "material"
+    if any(word in text for word in extraction_words):
+        return "extract"
+    if any(word in text for word in collection_words):
+        return "collect"
+    if requests_new_recommendation or any(word in text for word in ["竞赛", "比赛", "项目"]):
+        return "recommendation"
+    return current_intent
+
+
+def _select_recommended_project(state: dict[str, Any], text: str) -> dict[str, Any] | None:
+    recommendations = _recommendations_from_chat_state(state)
+    if not recommendations:
+        return None
+    ordinal_markers = {
+        "第一个": 0, "第一项": 0, "第1个": 0,
+        "第二个": 1, "第二项": 1, "第2个": 1,
+        "第三个": 2, "第三项": 2, "第3个": 2,
+    }
+    for marker, index in ordinal_markers.items():
+        if marker in text and index < len(recommendations):
+            return recommendations[index]
+    for recommendation in recommendations:
+        title = str(recommendation.get("title", ""))
+        if title and (title in text or any(token in text for token in re.findall(r"[\u4e00-\u9fff]{3,}", title))):
+            return recommendation
+    if len(recommendations) == 1 and any(word in text for word in ["刚才", "这个", "该竞赛", "该项目"]):
+        return recommendations[0]
+    return None
+
+
+def _correction_value_text(text: str) -> str:
+    """Keep only the replacement clause when the user corrects prior information."""
+    for marker in ["改成", "更正为", "应该是"]:
+        if marker in text:
+            return text.rsplit(marker, 1)[1].strip(" ，。！？：:") or text
+    match = re.search(r"不是.+?[，,；;\s]+是(.+)$", text)
+    if match:
+        return match.group(1).strip(" ，。！？：:") or text
+    return text
+
+
 def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
     state = {**new_chat_state(), **(state or {})}
     text = clean_text(message)
+    fact_text = _correction_value_text(text)
     state["turns"] = [*state.get("turns", []), text]
 
-    if any(word in text for word in ["材料", "申报", "报名表", "简历", "计划书", "PPT"]):
-        state["intent"] = "material"
-    elif any(word in text for word in ["竞赛", "比赛", "推荐", "项目"]):
-        state["intent"] = state.get("intent") or "recommendation"
+    state["intent"] = _detect_chat_intent(fact_text, state.get("intent", ""))
+
+    selected_project = _select_recommended_project(state, fact_text)
+    if selected_project:
+        state["project_name"] = str(selected_project.get("title", ""))
 
     major_aliases = {
         "计算机": "计算机科学与技术", "软件": "软件工程", "人工智能": "人工智能",
@@ -479,20 +563,20 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         "自动化": "自动化", "金融": "金融学", "工商管理": "工商管理",
     }
     for keyword, normalized in major_aliases.items():
-        if keyword in text and (
-            any(marker in text for marker in ["专业", "学生", "我是", "学的"])
-            or len(text) <= 30
+        if keyword in fact_text and (
+            any(marker in fact_text for marker in ["专业", "学生", "我是", "学的"])
+            or len(fact_text) <= 30
         ):
             state["major"] = normalized
             break
 
     for grade in ["大一", "大二", "大三", "大四", "研究生"]:
-        if grade in text:
+        if grade in fact_text:
             state["grade"] = grade
             break
 
     for level in ["国际级", "国家级", "省级", "校级"]:
-        if level in text:
+        if level in fact_text:
             state["competition_level"] = level
             break
 
@@ -502,7 +586,7 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         "科研": "科研学术", "数据分析": "数据分析", "数学建模": "数学建模",
     }
     for keyword, normalized in type_aliases.items():
-        if keyword in text:
+        if keyword in fact_text:
             state["competition_type"] = normalized
             if normalized not in state["interests"]:
                 state["interests"] = [*state["interests"], normalized]
@@ -510,16 +594,16 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
 
     known_skills = ["Python", "Java", "C++", "机器学习", "深度学习", "数据分析", "文案写作", "团队协作"]
     for skill in known_skills:
-        if skill.lower() in text.lower() and skill not in state["skills"]:
+        if skill.lower() in fact_text.lower() and skill not in state["skills"]:
             state["skills"] = [*state["skills"], skill]
 
-    if len(text) >= 80 or ("通知" in text and any(word in text for word in ["截止", "报名", "参赛"])):
+    if len(text) >= 80:
         state["notification_text"] = text
 
-    if "项目名称" in text or "竞赛名称" in text:
-        separator = "：" if "：" in text else ":"
-        if separator in text:
-            state["project_name"] = text.split(separator, 1)[1].strip()
+    if "项目名称" in fact_text or "竞赛名称" in fact_text:
+        separator = "：" if "：" in fact_text else ":"
+        if separator in fact_text:
+            state["project_name"] = fact_text.split(separator, 1)[1].strip()
 
     material_map = {
         "报名表": "generic_application_form", "报名简历": "generic_application_form",
@@ -527,7 +611,7 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         "PPT": "generic_ppt", "进度表": "generic_schedule", "清单": "challenge_cup_grand_checklist",
     }
     for keyword, material_type in material_map.items():
-        if keyword in text:
+        if keyword in fact_text:
             state["material_type"] = material_type
             break
     return state
@@ -536,11 +620,12 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
 def _next_chat_question(state: dict[str, Any]) -> str | None:
     if not state.get("intent"):
         return "你希望我帮你推荐竞赛，还是为已有项目生成申报材料？"
-    if not state.get("major"):
-        return "先告诉我你的专业是什么？例如：计算机科学与技术。"
-    if not state.get("grade"):
-        return "你目前是大几或研究生阶段？这会影响参赛资格判断。"
-    if state["intent"] == "recommendation":
+    if state["intent"] in {"recommendation", "material", "full_process"}:
+        if not state.get("major"):
+            return "先告诉我你的专业是什么？例如：计算机科学与技术。"
+        if not state.get("grade"):
+            return "你目前是大几或研究生阶段？这会影响参赛资格判断。"
+    if state["intent"] in {"recommendation", "full_process"}:
         if not state.get("competition_type"):
             return "你更想参加哪类竞赛？例如人工智能、算法、数学建模或创新创业。"
         if not state.get("competition_level"):
@@ -549,12 +634,25 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
             return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
         if not state.get("skills"):
             return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
-    if state["intent"] == "material":
+    if state["intent"] in {"material", "full_process"}:
         has_previous = bool(state.get("last_result"))
         if not state.get("notification_text") and not state.get("project_name") and not has_previous:
             return "请粘贴竞赛通知全文，或按“项目名称：XXX”告诉我具体项目。"
+        recommendations = _recommendations_from_chat_state(state)
+        if not state.get("project_name") and len(recommendations) > 1:
+            choices = "；".join(
+                f"{index}. {item.get('title', '未命名竞赛')}"
+                for index, item in enumerate(recommendations, 1)
+            )
+            return f"你想基于刚才推荐的哪一个竞赛生成材料？请回复序号或名称：{choices}"
+        if not state.get("project_name") and len(recommendations) == 1:
+            state["project_name"] = str(recommendations[0].get("title", ""))
         if not state.get("material_type"):
             return "你想生成哪种材料？例如报名表、报名简历、计划书、PPT 或材料清单。"
+    if state["intent"] == "extract" and not state.get("notification_text"):
+        return "请粘贴需要提取的竞赛通知全文。"
+    if state["intent"] == "collect" and not state.get("competition_type"):
+        return "你想收集哪一类竞赛信息？例如人工智能、算法、数学建模或创新创业。"
     return None
 
 
@@ -585,13 +683,18 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
         }
 
     last_result = state.get("last_result", {})
-    if task_type == "material" and not payload.get("project_info") and isinstance(last_result, dict):
-        for agent_result in last_result.get("data", {}).get("agent_results", []):
-            recommendations = agent_result.get("data", {}).get("recommendations", [])
-            if recommendations:
+    if task_type in {"material", "full_process"} and payload.get("project_info"):
+        selected_name = payload["project_info"]["project_name"]
+        for recommendation in _recommendations_from_chat_state(state):
+            if recommendation.get("title") == selected_name:
                 payload["project_info"] = {
-                    "project_name": recommendations[0].get("title", "推荐项目"),
-                    "background": recommendations[0].get("reason", "根据上一轮推荐结果生成。"),
+                    **recommendation,
+                    "project_name": selected_name,
+                    "background": recommendation.get("summary") or recommendation.get("reason", "根据上一轮推荐结果生成。"),
+                }
+                payload["competition_info"] = {
+                    **recommendation,
+                    "competition_name": selected_name,
                 }
                 break
 
@@ -654,8 +757,14 @@ def chat_submit(message, history, state):
         return "", history, state, build_status_html("ready"), EMPTY_RESULT, [], {}, []
 
     history.append({"role": "user", "content": message})
+    main_agent = MainAgent(config=load_config())
+    control = main_agent.handle_conversation_control(message, state)
+    if control:
+        answer = control.get("data", {}).get("final_answer", control.get("message", ""))
+        history.append({"role": "assistant", "content": answer})
+        return "", history, state, build_status_html("success", control.get("message")), answer, [], control, _result_downloads(state.get("last_result", {}))
     followup = (
-        MainAgent(config=load_config()).handle_followup(message, state["last_result"])
+        main_agent.handle_followup(message, state["last_result"])
         if state.get("last_result")
         else None
     )

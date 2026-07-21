@@ -190,6 +190,108 @@ def test_chat_material_request_reuses_previous_recommendation():
     assert standard_input["input_data"]["project_info"]["project_name"] == "全国大学生人工智能竞赛"
 
 
+def test_chat_material_transition_requires_selection_when_multiple_recommendations():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "last_result": {
+            "data": {"agent_results": [{"data": {"recommendations": [
+                {"title": "人工智能创新赛", "summary": "AI 项目竞赛"},
+                {"title": "算法程序设计赛", "summary": "算法个人赛", "deadline": "2026-09-30"},
+            ]}}]}
+        },
+    }
+
+    state = _update_chat_state(state, "我想要生成我自己的相关资料")
+    assert state["intent"] == "material"
+    assert state["project_name"] == ""
+    assert "哪一个竞赛" in _next_chat_question(state)
+
+    state = _update_chat_state(state, "第二个")
+    assert state["project_name"] == "算法程序设计赛"
+    assert "哪种材料" in _next_chat_question(state)
+
+    state = _update_chat_state(state, "报名简历")
+    assert _next_chat_question(state) is None
+    standard_input = _chat_standard_input(state, "报名简历")
+    assert standard_input["task_type"] == "material"
+    assert standard_input["input_data"]["project_info"]["project_name"] == "算法程序设计赛"
+    assert standard_input["input_data"]["competition_info"]["deadline"] == "2026-09-30"
+    assert MainAgent(config={}).select_agents(standard_input) == ["material"]
+
+
+def test_chat_collection_routes_only_to_info_collect():
+    state = _update_chat_state(new_chat_state(), "帮我查找人工智能竞赛信息")
+    assert state["intent"] == "collect"
+    assert _next_chat_question(state) is None
+    standard_input = _chat_standard_input(state, "帮我查找人工智能竞赛信息")
+    assert MainAgent(config={}).select_agents(standard_input) == ["info_collect"]
+
+
+def test_chat_extraction_routes_only_to_info_extract_after_notice():
+    state = _update_chat_state(new_chat_state(), "帮我提取这份竞赛通知的报名要求")
+    assert state["intent"] == "extract"
+    assert "粘贴" in _next_chat_question(state)
+
+    notice = "关于举办人工智能竞赛的通知。" + "参赛对象为在校大学生，报名截止日期为2026年9月30日。" * 4
+    state = _update_chat_state(state, notice)
+    assert state["intent"] == "extract"
+    assert _next_chat_question(state) is None
+    standard_input = _chat_standard_input(state, notice)
+    assert MainAgent(config={}).select_agents(standard_input) == ["info_extract"]
+
+
+def test_main_agent_handles_unrelated_topic_without_dispatching_agents():
+    result = MainAgent(config={}).handle_conversation_control(
+        "帮我写一首关于天气的诗", {"intent": "recommendation"}
+    )
+    assert result is not None
+    assert result["metadata"]["followup_type"] == "out_of_scope"
+    assert result["metadata"]["agents_dispatched"] == []
+    assert "大学生科研与竞赛" in result["data"]["final_answer"]
+
+
+def test_contextual_short_answer_is_not_treated_as_unrelated():
+    result = MainAgent(config={}).handle_conversation_control(
+        "国家级", {"intent": "recommendation"}
+    )
+    assert result is None
+
+
+def test_chat_correction_uses_replacement_value_only():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大二",
+        "competition_level": "省级",
+    }
+    state = _update_chat_state(state, "不是省级，是国家级")
+    assert state["competition_level"] == "国家级"
+
+    state = _update_chat_state(state, "专业改成软件工程")
+    assert state["major"] == "软件工程"
+
+
+def test_chat_correction_selects_replacement_project():
+    state = {
+        **new_chat_state(),
+        "intent": "material",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "last_result": {
+            "data": {"agent_results": [{"data": {"recommendations": [
+                {"title": "人工智能创新赛"},
+                {"title": "算法程序设计赛"},
+            ]}}]}
+        },
+    }
+    state = _update_chat_state(state, "不是第二个，是第一个")
+    assert state["project_name"] == "人工智能创新赛"
+
+
 def test_chat_asks_for_skills_before_recommendation():
     state = _update_chat_state(
         new_chat_state(),

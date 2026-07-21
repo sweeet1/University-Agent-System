@@ -177,6 +177,68 @@ class MainAgent:
             },
         )
 
+    def handle_conversation_control(
+        self,
+        user_input: str,
+        conversation_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Handle greetings and clearly out-of-scope messages without dispatching agents."""
+        text = str(user_input or "").strip()
+        state = conversation_state or {}
+        if not text:
+            return None
+
+        if len(text) <= 16 and any(word in text for word in ["你好", "您好", "在吗", "hello", "hi"]):
+            answer = (
+                "你好，我可以帮你收集和提取竞赛信息、根据个人情况推荐竞赛，"
+                "也可以基于选定竞赛生成报名材料。你现在想先做哪一步？"
+            )
+            control_type = "greeting"
+        elif len(text) <= 20 and any(word in text for word in ["谢谢", "感谢", "辛苦了"]):
+            answer = "不客气。你可以继续询问竞赛详情，或让我基于某个推荐生成申报材料。"
+            control_type = "acknowledgement"
+        elif self._is_clearly_out_of_scope(text, state):
+            answer = (
+                "这个问题暂时不在赛智通的服务范围内。我目前专注于大学生科研与竞赛："
+                "竞赛信息收集、通知提取、项目推荐、竞赛详情解答和申报材料生成。"
+                "你可以换成相关问题，例如“帮我推荐人工智能竞赛”或“给第二个竞赛生成报名简历”。"
+            )
+            control_type = "out_of_scope"
+        else:
+            return None
+
+        return self._build_output(
+            task_id="conversation_control",
+            status="success",
+            data={"final_answer": answer},
+            message="MainAgent handled conversational control.",
+            metadata={"followup_type": control_type, "agents_dispatched": []},
+        )
+
+    def _is_clearly_out_of_scope(self, text: str, state: dict[str, Any]) -> bool:
+        domain_words = [
+            "竞赛", "比赛", "项目", "科研", "通知", "报名", "申报", "材料", "资料",
+            "简历", "计划书", "PPT", "推荐", "提取", "收集", "专业", "年级", "技能",
+        ]
+        if any(word in text for word in domain_words):
+            return False
+        correction_words = ["不是", "改成", "更正", "应该是", "选第", "第一个", "第二个", "第三个"]
+        if any(word in text for word in correction_words):
+            return False
+        expected_short_answers = [
+            "大一", "大二", "大三", "大四", "研究生", "校级", "省级", "国家级", "国际级",
+            "Python", "Java", "C++", "人工智能", "算法", "数学建模", "创新创业",
+        ]
+        if any(word.lower() in text.lower() for word in expected_short_answers):
+            return False
+        explicit_off_topic = [
+            "天气", "股票", "彩票", "做饭", "菜谱", "电影", "电视剧", "游戏攻略",
+            "旅游攻略", "星座", "看病", "诊断疾病", "政治新闻", "写诗", "写小说",
+        ]
+        if any(word in text for word in explicit_off_topic):
+            return True
+        return not state.get("intent") and len(text) > 4
+
     def _is_competition_detail_request(self, message: str) -> bool:
         text = str(message or "").strip()
         return any(keyword in text for keyword in [
