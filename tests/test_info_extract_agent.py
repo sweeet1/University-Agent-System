@@ -73,6 +73,35 @@ def test_main_agent_uses_collection_result():
     assert adapted["raw_items"] == collected
 
 
+def test_mock_extraction_preserves_collector_fields(monkeypatch):
+    monkeypatch.delenv("INFO_EXTRACT_TEST_NO_KEY", raising=False)
+    agent = InfoExtractAgent(config={
+        "llm": {"api_key_env": "INFO_EXTRACT_TEST_NO_KEY"},
+    })
+    request = standard_input({
+        "raw_items": [{
+            "title": "全国大学生人工智能竞赛",
+            "url": "https://example.com/competition",
+            "source": "saikr",
+            "raw_text": "竞赛通知正文",
+            "description": "面向全国高校学生的人工智能竞赛。",
+            "organizer": "示例组委会",
+            "regist_start": "2026/07/01 09:00:00",
+            "regist_end": "2026/09/30 18:00:00",
+            "category": "人工智能",
+            "level": "国家级",
+        }]
+    })
+
+    result = agent.run(request)
+    item = result["data"]["structured_items"][0]
+    assert item["title"] == "全国大学生人工智能竞赛"
+    assert item["deadline"] == "2026-09-30"
+    assert item["organizer"] == "示例组委会"
+    assert item["source_url"] == "https://example.com/competition"
+    assert item["requirements"]["tags"] == ["人工智能", "国家级"]
+
+
 def test_main_agent_runs_pasted_notice_end_to_end():
     main_agent = MainAgent(config={})
     request = standard_input({

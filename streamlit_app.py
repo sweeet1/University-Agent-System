@@ -99,6 +99,11 @@ with chat_column:
 with side_column:
     st.subheader("当前进度")
     st.info(st.session_state.last_status)
+    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+        st.warning(
+            "尚未检测到 DEEPSEEK_API_KEY。系统会保留采集到的基础字段，"
+            "但通知理解和材料内容将使用降级模式。请在 App settings → Secrets 中配置密钥。"
+        )
 
     state = st.session_state.chat_state
     profile = {
