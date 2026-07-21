@@ -57,6 +57,20 @@ def reset_conversation() -> None:
 
 
 def run_conversation_turn(prompt: str) -> None:
+    previous_result = st.session_state.chat_state.get("last_result")
+    followup = None
+    if previous_result:
+        with st.spinner("正在读取竞赛信息并生成简介……"):
+            followup = MainAgent(config=load_config()).handle_followup(prompt, previous_result)
+    if followup:
+        answer = followup.get("data", {}).get("final_answer", followup.get("message", ""))
+        st.session_state.chat_state["turns"] = [
+            *st.session_state.chat_state.get("turns", []), prompt
+        ]
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.last_status = followup.get("status", "success")
+        return
+
     state = _update_chat_state(st.session_state.chat_state, prompt)
     st.session_state.chat_state = state
     question = _next_chat_question(state)

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -128,6 +129,163 @@ class MainAgent:
                 },
             },
         )
+
+    def handle_followup(
+        self,
+        user_input: str,
+        previous_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Handle a conversational follow-up against a previous recommendation result.
+
+        Returning ``None`` means the message is not a supported follow-up and should
+        continue through the normal task-planning flow.
+        """
+        if not self._is_competition_detail_request(user_input):
+            return None
+
+        recommendations = self._recommendations_from_result(previous_result)
+        if not recommendations:
+            return self._build_output(
+                task_id=self._get_task_id(previous_result),
+                status="need_input",
+                data={"final_answer": "当前对话中还没有可展开的推荐结果，请先完成一次竞赛推荐。"},
+                message="No previous recommendation is available.",
+                next_action="Run a recommendation task first.",
+                metadata={"followup_type": "competition_detail"},
+            )
+
+        selected = self._select_recommendation_for_detail(recommendations, user_input)
+        fallback = self._build_competition_detail_fallback(selected)
+        generated = self._call_detail_llm(user_input, selected)
+        answer = generated.get("content") or fallback
+        source_url = str(selected.get("source_url", "")).strip()
+        if source_url:
+            answer += f"\n\n[打开竞赛原始网页]({source_url})"
+        else:
+            answer += "\n\n> 当前采集结果没有提供可验证的原始网页链接。"
+        answer += "\n\n> 请以主办方或竞赛官网的最新通知为准。"
+
+        return self._build_output(
+            task_id=self._get_task_id(previous_result),
+            status="success",
+            data={"final_answer": answer, "selected_competition": selected},
+            message="MainAgent completed conversational follow-up.",
+            metadata={
+                "followup_type": "competition_detail",
+                "generation_source": "llm" if generated.get("content") else "fallback",
+                "generation_error": generated.get("error"),
+            },
+        )
+
+    def _is_competition_detail_request(self, message: str) -> bool:
+        text = str(message or "").strip()
+        return any(keyword in text for keyword in [
+            "详细了解", "详细介绍", "具体介绍", "竞赛详情", "项目详情",
+            "展开说说", "详细说说", "第一个", "第二个", "第三个",
+        ])
+
+    def _recommendations_from_result(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        for agent_result in result.get("data", {}).get("agent_results", []):
+            recommendations = agent_result.get("data", {}).get("recommendations")
+            if isinstance(recommendations, list) and recommendations:
+                return [item for item in recommendations if isinstance(item, dict)]
+        return []
+
+    def _select_recommendation_for_detail(
+        self,
+        recommendations: list[dict[str, Any]],
+        message: str,
+    ) -> dict[str, Any]:
+        ordinal_map = {
+            "第一个": 0, "第一项": 0, "第1个": 0,
+            "第二个": 1, "第二项": 1, "第2个": 1,
+            "第三个": 2, "第三项": 2, "第3个": 2,
+        }
+        for marker, index in ordinal_map.items():
+            if marker in message and index < len(recommendations):
+                return recommendations[index]
+
+        query = str(message or "").strip()
+        for phrase in [
+            "我想", "详细了解", "详细介绍", "具体介绍", "竞赛详情", "项目详情",
+            "展开说说", "详细说说", "一下", "这个", "竞赛", "项目",
+        ]:
+            query = query.replace(phrase, "")
+        query = query.strip(" ，。！？：:、“”'\"")
+        if query:
+            tokens = re.findall(r"[A-Za-z0-9+]+|[\u4e00-\u9fff]{2,}", query)
+            for recommendation in recommendations:
+                title = str(recommendation.get("title", ""))
+                if query in title or any(token in title for token in tokens):
+                    return recommendation
+        return recommendations[0]
+
+    def _build_competition_detail_fallback(self, selected: dict[str, Any]) -> str:
+        title = str(selected.get("title") or "未命名项目")
+        lines = [f"### {title}"]
+        fields = [
+            ("", selected.get("summary")),
+            ("主办方", selected.get("organizer")),
+            ("截止日期", selected.get("deadline")),
+            ("适合你的原因", selected.get("reason")),
+            ("注意事项", selected.get("risk")),
+        ]
+        for label, value in fields:
+            value = str(value or "").strip()
+            if not value or value.lower() == "unknown":
+                continue
+            lines.append(value if not label else f"- **{label}：** {value}")
+        return "\n\n".join(lines)
+
+    def _call_detail_llm(
+        self,
+        user_input: str,
+        selected: dict[str, Any],
+    ) -> dict[str, Any]:
+        llm_config = self.config.get("llm", {}) if isinstance(self.config, dict) else {}
+        api_key_env = llm_config.get("api_key_env", "DEEPSEEK_API_KEY")
+        api_key = llm_config.get("api_key", "") or os.getenv(str(api_key_env), "")
+        if not api_key:
+            return {"content": "", "error": f"Missing API key in {api_key_env}."}
+
+        base_url = llm_config.get("base_url") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        model = llm_config.get("model") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        source_data = {
+            key: selected.get(key, "")
+            for key in ["title", "summary", "deadline", "organizer", "type", "reason", "risk", "source_url"]
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是大学生竞赛顾问。只能根据提供的数据回答，不得虚构。"
+                        "请用中文简要说明竞赛概况、适合人群、时间提醒、与用户的匹配原因，"
+                        "并指出仍需到官网核实的信息。回答控制在600字以内。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"用户问题：{user_input}\n竞赛数据：{json.dumps(source_data, ensure_ascii=False)}",
+                },
+            ],
+            "temperature": 0.2,
+            "max_tokens": 900,
+        }
+        request = urllib.request.Request(
+            url=base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(llm_config.get("timeout", 30))) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+            content = str(response_data["choices"][0]["message"]["content"] or "").strip()
+            return {"content": content, "error": None}
+        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
+            return {"content": "", "error": {"type": exc.__class__.__name__, "message": str(exc)}}
 
     def plan_task(self, input_data: dict[str, Any]) -> dict[str, Any]:
         """Use an optional LLM planner, then fall back to deterministic rules."""

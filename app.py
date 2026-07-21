@@ -625,10 +625,21 @@ def _chat_result_text(result: dict) -> str:
         if recommendations:
             lines.append("### 推荐结果")
             for index, recommendation in enumerate(recommendations, 1):
+                title = recommendation.get("title", "未命名项目")
+                url = recommendation.get("source_url", "")
+                title_display = f"[{title}]({url})" if url else f"**{title}**"
+                summary = str(recommendation.get("summary", "")).strip()
+                metadata = []
+                if recommendation.get("deadline") not in {None, "", "unknown"}:
+                    metadata.append(f"截止日期：{recommendation['deadline']}")
+                if recommendation.get("organizer") not in {None, "", "unknown"}:
+                    metadata.append(f"主办方：{recommendation['organizer']}")
                 lines.append(
-                    f"{index}. **{recommendation.get('title', '未命名项目')}** "
+                    f"{index}. {title_display} "
                     f"（匹配分 {recommendation.get('match_score', '-')}）\n"
-                    f"   {recommendation.get('reason', '')}"
+                    f"   {summary or recommendation.get('reason', '暂无简介')}"
+                    + (f"\n   {'；'.join(metadata)}" if metadata else "")
+                    + (f"\n   推荐理由：{recommendation.get('reason', '')}" if summary else "")
                 )
         if data.get("material_name"):
             lines.append(f"### 材料已生成\n{data['material_name']} 已生成，可在下方下载并人工复核。")
@@ -643,6 +654,16 @@ def chat_submit(message, history, state):
         return "", history, state, build_status_html("ready"), EMPTY_RESULT, [], {}, []
 
     history.append({"role": "user", "content": message})
+    followup = (
+        MainAgent(config=load_config()).handle_followup(message, state["last_result"])
+        if state.get("last_result")
+        else None
+    )
+    if followup:
+        answer = followup.get("data", {}).get("final_answer", followup.get("message", ""))
+        state["turns"] = [*state.get("turns", []), message]
+        history.append({"role": "assistant", "content": answer})
+        return "", history, state, build_status_html(followup.get("status", "success"), followup.get("message")), answer, [], followup, _result_downloads(state["last_result"])
     state = _update_chat_state(state, message)
     question = _next_chat_question(state)
     if question:

@@ -109,7 +109,10 @@ def test_output_schema_and_top3() -> None:
     _assert(1 <= len(recommendations) <= 3, f"默认 Top3，实际条数: {len(recommendations)}")
 
     for item in recommendations:
-        for key in ("title", "match_score", "recommend_level", "reason", "risk", "suggested_action"):
+        for key in (
+            "title", "match_score", "recommend_level", "reason", "risk",
+            "suggested_action", "source_url", "summary", "deadline", "organizer", "type",
+        ):
             _assert(key in item, f"推荐项缺少字段: {key}")
         _assert(item["reason"], "reason 不应为空字符串")
 
@@ -240,6 +243,77 @@ def test_raw_recommendation_schedule_includes_extraction() -> None:
         selected == ["info_collect", "info_extract", "recommendation"],
         f"原始数据推荐调度顺序错误: {selected}",
     )
+
+
+def _previous_recommendation_result() -> dict:
+    return {
+        "task_id": "followup-test",
+        "data": {"agent_results": [{"data": {"recommendations": [
+            {
+                "title": "华青杯大学生人工智能大赛",
+                "summary": "面向大学生的人工智能实践竞赛。",
+                "organizer": "华青杯组委会",
+                "deadline": "2026-09-30",
+                "reason": "方向与人工智能兴趣匹配。",
+                "source_url": "https://example.com/huaqing",
+            },
+            {
+                "title": "大学生算法挑战赛",
+                "summary": "考察算法设计与编程能力。",
+                "source_url": "https://example.com/algorithm",
+            },
+        ]}}]},
+    }
+
+
+def test_main_agent_handles_named_detail_followup(monkeypatch) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    result = MainAgent(config={}).handle_followup(
+        "我想详细了解华青杯", _previous_recommendation_result()
+    )
+    _assert(result is not None, "详情追问应由 MainAgent 处理")
+    _assert(result["status"] == "success", f"详情追问失败: {result}")
+    _assert(result["data"]["selected_competition"]["title"].startswith("华青杯"), "未按名称选中竞赛")
+    _assert("https://example.com/huaqing" in result["data"]["final_answer"], "详情缺少原始网页")
+    _assert(result["metadata"]["generation_source"] == "fallback", "无密钥时应使用稳定回退")
+
+
+def test_main_agent_handles_ordinal_detail_followup(monkeypatch) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    result = MainAgent(config={}).handle_followup(
+        "请详细介绍第二个", _previous_recommendation_result()
+    )
+    _assert(result is not None, "序号详情追问应由 MainAgent 处理")
+    _assert(result["data"]["selected_competition"]["title"] == "大学生算法挑战赛", "未按序号选中竞赛")
+
+
+def test_main_agent_ignores_non_detail_followup() -> None:
+    result = MainAgent(config={}).handle_followup(
+        "我想参加国家级竞赛", _previous_recommendation_result()
+    )
+    _assert(result is None, "普通补充信息应继续进入正常推荐流程")
+
+
+def test_main_agent_uses_llm_for_detail_followup(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"API generated detail"}}]}'
+
+    monkeypatch.setattr(
+        "agents.main_agent.urllib.request.urlopen",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+    result = MainAgent(config={"llm": {"api_key": "test-key"}}).handle_followup(
+        "我想详细了解华青杯", _previous_recommendation_result()
+    )
+    _assert(result["metadata"]["generation_source"] == "llm", "配置 API 后应使用模型生成详情")
+    _assert("API generated detail" in result["data"]["final_answer"], "模型内容未进入最终回答")
 
 
 def main() -> int:

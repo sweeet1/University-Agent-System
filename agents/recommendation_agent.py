@@ -741,6 +741,11 @@ class RecommendationAgent:
                 "risk":             risk,
                 "suggested_action": action,
                 "detail":           detail,
+                "source_url":       item.get("source_url", ""),
+                "summary":          item.get("summary", ""),
+                "deadline":         item.get("deadline", ""),
+                "organizer":        item.get("organizer", ""),
+                "type":             item.get("type", ""),
             })
 
         status = "success" if recommendations else "partial"
