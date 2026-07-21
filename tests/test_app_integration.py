@@ -188,3 +188,14 @@ def test_chat_material_request_reuses_previous_recommendation():
     assert _next_chat_question(state) is None
     standard_input = _chat_standard_input(state, "给刚才推荐的项目生成报名简历")
     assert standard_input["input_data"]["project_info"]["project_name"] == "全国大学生人工智能竞赛"
+
+
+def test_chat_asks_for_skills_before_recommendation():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大三学生，想参加国家级人工智能竞赛",
+    )
+
+    assert _next_chat_question(state) == (
+        "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
+    )

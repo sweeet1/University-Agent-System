@@ -545,6 +545,10 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
             return "你更想参加哪类竞赛？例如人工智能、算法、数学建模或创新创业。"
         if not state.get("competition_level"):
             return "你倾向校级、省级、国家级还是国际级竞赛？"
+        if not state.get("skills"):
+            return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
+        if not state.get("skills"):
+            return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
     if state["intent"] == "material":
         has_previous = bool(state.get("last_result"))
         if not state.get("notification_text") and not state.get("project_name") and not has_previous:

@@ -295,6 +295,7 @@ class InfoExtractAgent:
                 print(f"[抽取] ({i+1}/{total}) {raw_item.get('title','')[:50]} ...")
                 extracted = self._call_llm_extract(raw_text, source_url)
                 validated = self._validate_and_fix(extracted)
+                validated = self._apply_source_fallbacks(validated, raw_item)
                 if not validated.get("source_url") or validated["source_url"] == "unknown":
                     validated["source_url"] = source_url
                 validated["_extract_status"] = "success"
@@ -344,6 +345,46 @@ class InfoExtractAgent:
                 })
 
         return {"structured_items": structured_items}
+
+    def _apply_source_fallbacks(self, extracted: dict, raw_item: dict) -> dict:
+        """Keep trustworthy collector fields when LLM extraction is unavailable."""
+        result = dict(extracted)
+        missing = {None, "", "unknown"}
+
+        if result.get("title") in missing and raw_item.get("title"):
+            result["title"] = str(raw_item["title"])
+        if result.get("organizer") in missing and raw_item.get("organizer"):
+            result["organizer"] = str(raw_item["organizer"])
+        if result.get("summary") in missing:
+            description = str(raw_item.get("description", "")).strip()
+            result["summary"] = description[:500] or str(raw_item.get("title", "unknown"))
+
+        if result.get("deadline") in missing:
+            deadline = str(raw_item.get("regist_end", "")).strip()
+            date_match = re.search(r"\d{4}[/-]\d{2}[/-]\d{2}", deadline)
+            if date_match:
+                result["deadline"] = date_match.group(0).replace("/", "-")
+
+        if result.get("registration_time") in missing:
+            registration_time = str(raw_item.get("regist_start", "")).strip()
+            if registration_time:
+                result["registration_time"] = registration_time
+
+        requirements = result.get("requirements", {})
+        if not isinstance(requirements, dict):
+            requirements = dict(self.FIELD_DEFAULTS["requirements"])
+        requirements = dict(requirements)
+        source_tags = [
+            str(value).strip()
+            for value in (raw_item.get("category"), raw_item.get("level"))
+            if value not in missing
+        ]
+        if source_tags and not requirements.get("tags"):
+            requirements["tags"] = source_tags
+        if requirements.get("category") in missing and raw_item.get("category"):
+            requirements["category"] = str(raw_item["category"])
+        result["requirements"] = requirements
+        return result
 
     # ── LLM 调用 ─────────────────────────────────────────
 

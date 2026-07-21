@@ -25,6 +25,8 @@ logs/
 data/temp/
 data/output/
 data/processed/
+data/raw/competitions.json
+data/raw/crawl_logs.json
 
 # Local/internal project files
 docs/internal/
