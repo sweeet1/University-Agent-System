@@ -86,19 +86,29 @@ def test_parser_unit():
             print(f"  {name:20s}  ERROR: {e}")
 
 
+def _load_config():
+    """加载 config.yaml 作为基础配置，test_crawler 只覆盖 info_collect 部分。"""
+    import yaml
+    config_path = os.path.join(PROJECT_ROOT, "config", "config.yaml")
+    cfg = {}
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    return cfg
+
+
 def test_crawler_dry_run(sources: list[str]):
     """验证 Crawler 能正确识别并准备采集指定数据源（不发实际请求）。"""
     banner("3. Crawler 干跑（验证调度逻辑）")
 
-    config = {
-        "info_collect": {
-            "request_delay_min": 0.1,
-            "request_delay_max": 0.3,
-            "max_pages": 1,
-        },
-        "storage": {"raw_data_path": "./data/raw"},
-    }
-    storage = Storage("./data/raw")
+    config = _load_config()
+    config.setdefault("info_collect", {}).update({
+        "request_delay_min": 0.1,
+        "request_delay_max": 0.3,
+        "max_pages": 1,
+    })
+    config.setdefault("storage", {}).setdefault("raw_data_path", "./data/raw")
+    storage = Storage.create(config)
     crawler = Crawler(config, storage)
 
     print(f"待采集数据源: {sources}")
@@ -148,17 +158,16 @@ def test_crawl_live(source: str, keywords: list[str] | None = None, timeout: int
     if keywords is None:
         keywords = DEFAULT_KEYWORDS.get(source, ["竞赛", "大赛"])
 
-    config = {
-        "info_collect": {
-            "request_delay_min": 1,
-            "request_delay_max": 3,
-            "max_pages": 10,
-            "client_timeout": timeout,
-        },
-        "storage": {"raw_data_path": "./data/raw"},
-    }
+    config = _load_config()
+    config.setdefault("info_collect", {}).update({
+        "request_delay_min": 1,
+        "request_delay_max": 3,
+        "max_pages": 10,
+        "client_timeout": timeout,
+    })
+    config.setdefault("storage", {}).setdefault("raw_data_path", "./data/raw")
 
-    storage = Storage("./data/raw")
+    storage = Storage.create(config)
     crawler = Crawler(config, storage)
     log_id = storage.start_crawl_log(f"test_{source}", source)
     stats = {}  # 提前初始化

@@ -44,11 +44,7 @@ class InfoCollectAgent:
 
     def _get_storage(self) -> Storage:
         if self._storage is None:
-            raw_path = self.config.get("storage", {}).get("raw_data_path", "./data/raw")
-            if raw_path.startswith("./"):
-                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                raw_path = os.path.join(project_root, raw_path[2:])
-            self._storage = Storage(raw_path)
+            self._storage = Storage.create(self.config)
         return self._storage
 
     def _get_crawler(self) -> Crawler:

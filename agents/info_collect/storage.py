@@ -6,6 +6,17 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+import logging
+
+# 自动加载 .env 文件（确保 SUPABASE_URL 等环境变量可用）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logger = logging.getLogger(__name__)
+
 
 class Storage:
     """基于 JSON 文件的竞赛数据存储，无需数据库，可直接用编辑器打开。"""
@@ -87,3 +98,67 @@ class Storage:
         if source:
             items = [it for it in items if it.get("source") == source]
         return sorted(items, key=lambda x: x.get("collected_at", ""), reverse=True)
+
+    # ---- 工厂方法 ----
+
+    @staticmethod
+    def _resolve_env(value: str) -> str:
+        """解析配置值中的 ${VAR} 环境变量引用。"""
+        import re
+        if not isinstance(value, str):
+            return value
+        def _replace(m):
+            var_name = m.group(1)
+            return os.getenv(var_name, "")
+        return re.sub(r"\$\{(\w+)\}", _replace, value)
+
+    @staticmethod
+    def create(config: dict):
+        """根据配置选择后端：json（本地文件）或 supabase（云端）。
+
+        优先级: 传入 config > 环境变量 SUPABASE_STORE > json
+        """
+        storage_cfg = config.get("storage", {})
+        backend = (
+            storage_cfg.get("backend")
+            or os.getenv("SUPABASE_STORE", "")
+            or "json"
+        )
+
+        if backend == "supabase":
+            try:
+                from .supabase_store import SupabaseStore
+            except ImportError:
+                raise ImportError(
+                    "请安装 supabase 库: pip install supabase"
+                )
+
+            # 解析 config 中的 ${VAR} 引用，fallback 到环境变量
+            url = Storage._resolve_env(
+                storage_cfg.get("supabase_url", "")
+            ) or os.getenv("SUPABASE_URL", "")
+            key = Storage._resolve_env(
+                storage_cfg.get("supabase_key", "")
+            ) or os.getenv("SUPABASE_ANON_KEY", "")
+
+            if not url or not key:
+                logger.warning(
+                    "Supabase 配置不完整，回退到 JSON 存储。"
+                    "请设置 SUPABASE_URL 和 SUPABASE_ANON_KEY 环境变量。"
+                )
+                return Storage._json_fallback(config)
+
+            logger.info("使用 Supabase 云存储: %s", url[:40])
+            return SupabaseStore(url=url, key=key)
+
+        # 默认 JSON 存储
+        return Storage._json_fallback(config)
+
+    @staticmethod
+    def _json_fallback(config: dict) -> "Storage":
+        raw_path = config.get("storage", {}).get("raw_data_path", "./data/raw")
+        if raw_path.startswith("./"):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            raw_path = os.path.join(project_root, raw_path[2:])
+        logger.info("使用本地 JSON 存储: %s", raw_path)
+        return Storage(raw_path)

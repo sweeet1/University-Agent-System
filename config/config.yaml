@@ -30,11 +30,16 @@ info_collect:
       max_pages: 10
 
 storage:
+  # backend: json（本地文件）或 supabase（云端 PostgreSQL）
+  backend: supabase
   raw_data_path: ./data/raw
   processed_data_path: ./data/processed
   output_path: ./data/output
   temp_path: ./data/temp
   log_path: ./logs
+  # Supabase 配置（backend=supabase 时需要，也可通过环境变量设置）
+  supabase_url: ${SUPABASE_URL}
+  supabase_key: ${SUPABASE_ANON_KEY}
 
 agent:
   timeout: 60
