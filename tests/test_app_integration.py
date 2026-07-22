@@ -148,12 +148,13 @@ def test_chat_collects_context_across_multiple_turns():
     state = _update_chat_state(new_chat_state(), "我是计算机专业大三学生，需要竞赛推荐")
     assert state["major"] == "计算机科学与技术"
     assert state["grade"] == "大三"
-    assert _next_chat_question(state) == "你更想参加哪类竞赛？例如人工智能、算法、数学建模或创新创业。"
+    question = _next_chat_question(state)
+    assert "哪个方向" in question or "更感兴趣" in question
 
     state = _update_chat_state(state, "我更喜欢算法，也会Python")
     assert state["competition_type"] == "算法与程序设计"
     assert state["skills"] == ["Python"]
-    assert _next_chat_question(state) == "你倾向校级、省级、国家级还是国际级竞赛？"
+    assert "校级、省级、国家级还是国际级" in _next_chat_question(state)
 
     state = _update_chat_state(state, "国家级")
     assert _next_chat_question(state) is None
@@ -325,6 +326,28 @@ def test_chat_asks_for_skills_before_recommendation():
         "我是计算机专业大三学生，想参加国家级人工智能竞赛",
     )
 
-    assert _next_chat_question(state) == (
-        "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
+    question = _next_chat_question(state)
+    assert "比较熟悉的技能" in question
+    assert "暂时没有特别擅长的也没关系" in question
+
+
+def test_chat_allows_user_to_continue_without_declared_skills():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大三学生，想参加国家级人工智能竞赛",
     )
+
+    state = _update_chat_state(state, "暂时没有特别擅长的技能")
+
+    assert state["skills_skipped"] is True
+    assert _next_chat_question(state) is None
+
+
+def test_chat_groups_basic_profile_questions_naturally():
+    state = _update_chat_state(new_chat_state(), "帮我推荐一些竞赛")
+
+    question = _next_chat_question(state)
+
+    assert "专业" in question
+    assert "读大几" in question
+    assert "请输入" not in question

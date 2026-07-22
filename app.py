@@ -436,11 +436,13 @@ def build_status_rows(agent_results: list[dict]) -> list[list[str]]:
 
 
 CHAT_WELCOME = (
-    "你好，我是赛智通。你可以直接告诉我目标，例如：\n\n"
-    "- 我是计算机专业大三学生，想参加国家级人工智能竞赛\n"
-    "- 帮我从这份竞赛通知中提取要求并推荐\n"
-    "- 根据刚才推荐的项目生成报名材料\n\n"
-    "信息不完整时，我会一次追问一项，并在本次对话中持续记住。"
+    "你好，我是赛智通。无论你是想找合适的竞赛、看懂一份竞赛通知，"
+    "还是准备报名材料，都可以直接用自己的话告诉我。\n\n"
+    "比如你可以说：\n\n"
+    "- 我是计算机专业大三学生，想找国家级人工智能竞赛\n"
+    "- 帮我整理这份竞赛通知，看看我是否适合参加\n"
+    "- 根据刚才推荐的第二个比赛生成报名材料\n\n"
+    "如果还缺少关键信息，我会结合你已经说过的内容和你一起补充，不用按固定格式填写。"
 )
 
 
@@ -451,6 +453,7 @@ def new_chat_state() -> dict[str, Any]:
         "grade": "",
         "interests": [],
         "skills": [],
+        "skills_skipped": False,
         "competition_type": "",
         "competition_level": "",
         "notification_text": "",
@@ -598,6 +601,12 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         if skill.lower() in fact_text.lower() and skill not in state["skills"]:
             state["skills"] = [*state["skills"], skill]
 
+    if state.get("intent") in {"recommendation", "full_process"} and any(
+        phrase in fact_text
+        for phrase in ["暂时没有技能", "没有特别擅长", "还不清楚擅长", "不知道擅长", "没什么技能"]
+    ):
+        state["skills_skipped"] = True
+
     if len(text) >= 80:
         state["notification_text"] = text
 
@@ -621,40 +630,54 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
 
 def _next_chat_question(state: dict[str, Any]) -> str | None:
     if not state.get("intent"):
-        return "你希望我帮你推荐竞赛，还是为已有项目生成申报材料？"
+        return (
+            "当然可以。你现在更想先找适合自己的竞赛、整理一份竞赛通知，"
+            "还是为已经选好的项目准备材料？"
+        )
     if state["intent"] in {"recommendation", "material", "full_process"}:
+        if not state.get("major") and not state.get("grade"):
+            return (
+                "没问题，我先了解一下你的基本情况：你现在是什么专业、读大几？"
+                "这两项会直接影响参赛资格和推荐方向。"
+            )
         if not state.get("major"):
-            return "先告诉我你的专业是什么？例如：计算机科学与技术。"
+            return "我记住你的年级了。再告诉我所学专业就可以，例如计算机、软件工程或工商管理。"
         if not state.get("grade"):
-            return "你目前是大几或研究生阶段？这会影响参赛资格判断。"
+            return "专业方向了解了。你目前读大几，或者是在研究生阶段？我会据此判断参赛资格。"
     if state["intent"] in {"recommendation", "full_process"}:
+        if not state.get("competition_type") and not state.get("competition_level"):
+            return (
+                "接下来想听听你的偏好：你对人工智能、算法、数学建模、创新创业中的哪类更感兴趣？"
+                "对竞赛级别有要求的话，也可以一起告诉我。"
+            )
         if not state.get("competition_type"):
-            return "你更想参加哪类竞赛？例如人工智能、算法、数学建模或创新创业。"
+            return "竞赛级别我记下了。你更想尝试哪个方向？比如人工智能、算法、数学建模或创新创业。"
         if not state.get("competition_level"):
-            return "你倾向校级、省级、国家级还是国际级竞赛？"
-        if not state.get("skills"):
-            return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
-        if not state.get("skills"):
-            return "你目前掌握哪些技能？例如 Python、C++、算法、机器学习或团队协作。"
+            return "方向已经清楚了。你更倾向校级、省级、国家级还是国际级？如果没有硬性要求，也可以告诉我。"
+        if not state.get("skills") and not state.get("skills_skipped"):
+            return (
+                "为了把结果排得更贴合，你目前有哪些比较熟悉的技能？"
+                "比如 Python、C++、算法、机器学习或团队协作。暂时没有特别擅长的也没关系，直接告诉我即可。"
+            )
     if state["intent"] in {"material", "full_process"}:
         has_previous = bool(state.get("last_result"))
         if not state.get("notification_text") and not state.get("project_name") and not has_previous:
-            return "请粘贴竞赛通知全文，或按“项目名称：XXX”告诉我具体项目。"
+            return "可以。把竞赛通知贴给我，或者直接告诉我项目名称，我就能接着帮你准备材料。"
         recommendations = _recommendations_from_chat_state(state)
         if not state.get("project_name") and len(recommendations) > 1:
             choices = "；".join(
                 f"{index}. {item.get('title', '未命名竞赛')}"
                 for index, item in enumerate(recommendations, 1)
             )
-            return f"你想基于刚才推荐的哪一个竞赛生成材料？请回复序号或名称：{choices}"
+            return f"刚才的推荐里，你想为哪一个竞赛准备材料？回复序号或名称都可以：{choices}"
         if not state.get("project_name") and len(recommendations) == 1:
             state["project_name"] = str(recommendations[0].get("title", ""))
         if not state.get("material_type"):
-            return "你想生成哪种材料？例如报名表、报名简历、计划书、PPT 或材料清单。"
+            return "目标竞赛确定了。接下来想准备哪种材料？报名表、报名简历、计划书、PPT 或材料清单都可以。"
     if state["intent"] == "extract" and not state.get("notification_text"):
-        return "请粘贴需要提取的竞赛通知全文。"
+        return "好的，把竞赛通知全文粘贴过来就行，我会帮你整理关键信息和报名要求。"
     if state["intent"] == "collect" and not state.get("competition_type"):
-        return "你想收集哪一类竞赛信息？例如人工智能、算法、数学建模或创新创业。"
+        return "可以，你想先找哪个方向的竞赛？比如人工智能、算法、数学建模或创新创业。"
     return None
 
 
@@ -709,7 +732,7 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
         "input_data": payload,
         "history": [],
         "required_output": "markdown",
-        "metadata": {"source": "gradio_chat", "ui_version": "3.0"},
+        "metadata": {"source": "streamlit_chat", "ui_version": "3.0"},
     }
 
 
@@ -728,6 +751,11 @@ def _chat_result_text(result: dict) -> str:
         data = item.get("data", {})
         recommendations = data.get("recommendations", [])
         if recommendations:
+            top_title = str(recommendations[0].get("title", "排名最靠前的竞赛"))
+            lines.append(
+                f"我结合你提供的背景和偏好做了筛选。**{top_title}** 目前最值得优先了解，"
+                "其他候选也一并列在下面，方便你比较。"
+            )
             lines.append("### 推荐结果")
             for index, recommendation in enumerate(recommendations, 1):
                 title = recommendation.get("title", "未命名项目")
@@ -747,8 +775,18 @@ def _chat_result_text(result: dict) -> str:
                     + (f"\n   推荐理由：{recommendation.get('reason', '')}" if summary else "")
                 )
         if data.get("material_name"):
-            lines.append(f"### 材料已生成\n{data['material_name']} 已生成，可在下方下载并人工复核。")
-    return "\n\n".join(lines) or result.get("data", {}).get("final_answer", "任务已完成。")
+            lines.append(
+                f"### 材料已经准备好\n{data['material_name']} 已生成。下载后建议再核对个人经历、"
+                "项目数据和报名要求，确认无误后再提交。"
+            )
+    if lines:
+        return "\n\n".join(lines)
+    fallback = str(result.get("data", {}).get("final_answer", "")).strip()
+    if fallback:
+        return fallback
+    if result.get("status") in {"failed", "partial"}:
+        return "这次处理没有完整完成。你可以稍后重试，或者换一组更宽泛的条件，我再帮你查找。"
+    return "这一步已经处理好了。你可以继续问我结果中的具体项目，或者接着准备报名材料。"
 
 
 def chat_submit(message, history, state):
