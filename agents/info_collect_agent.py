@@ -16,6 +16,7 @@ import yaml
 from .info_collect.storage import Storage
 from .info_collect.crawler import Crawler
 from .info_collect.file_parser import parse_files
+from .info_collect.registry import SourceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class InfoCollectAgent:
         if not sources:
             raise ValueError("请提供 sources 参数，例如 ['saikr'] 或 ['local_file']")
 
-        web_sources = {"saikr", "5ijingsai", "ali_tianchi", "heywhale", "datafountain"}
+        web_sources = set(SourceRegistry.list_all())
         local_sources = {"local_file"}
         valid_sources = web_sources | local_sources
 
@@ -164,7 +165,7 @@ class InfoCollectAgent:
         all_items = []
         all_stats: dict[str, Any] = {}
 
-        web_sources = {"saikr", "5ijingsai", "ali_tianchi", "heywhale", "datafountain"}
+        web_sources = set(SourceRegistry.list_all())
 
         # 网页采集
         web_srcs = [s for s in sources if s in web_sources]

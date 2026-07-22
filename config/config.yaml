@@ -11,6 +11,23 @@ info_collect:
   request_delay_min: 1
   request_delay_max: 3
   max_pages: 10
+  client_timeout: 10
+  sources:
+    saikr:
+      enabled: true
+      max_pages: 10
+    jingsai52:
+      enabled: true
+      max_pages: 10
+    ali_tianchi:
+      enabled: true
+      max_pages: 10
+    heywhale:
+      enabled: true
+      max_pages: 10
+    datafountain:
+      enabled: true
+      max_pages: 10
 
 storage:
   raw_data_path: ./data/raw

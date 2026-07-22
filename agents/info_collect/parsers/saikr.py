@@ -18,7 +18,9 @@ class SaikrParser(BaseParser):
         super().__init__(config)
         self._class_map: dict[str, str] = {}
 
-    def set_class_map(self, class_data: list[dict]):
+    def configure(self, config_data):
+        """接收分类配置，建立 class_id → 中文名 的映射。"""
+        class_data = config_data.get("classData", [])
         for top in class_data:
             for son in top.get("sons", []):
                 self._class_map[str(son.get("value", ""))] = son.get("label", "")
@@ -26,13 +28,16 @@ class SaikrParser(BaseParser):
     def get_class_name(self, class_id: str) -> str:
         return self._class_map.get(str(class_id), class_id)
 
-    async def parse_list_page(self, html: str) -> list[dict]:
-        return []
+    # ---- 列表解析 ----
 
-    async def parse_detail_page(self, html: str) -> str:
-        return html or ""
+    def parse_list(self, data: dict) -> list[dict]:
+        """解析 API 返回的列表 JSON，返回 raw_item 列表。"""
+        items = data.get("list", [])
+        return [self.parse_contest_item(item) for item in items]
 
-    # ---- 列表项解析 ----
+    def parse_featured_list(self, items: list[dict]) -> list[dict]:
+        """解析首页推荐数据，返回 raw_item 列表。"""
+        return [self.parse_featured_item(item) for item in items]
 
     def parse_contest_item(self, item: dict) -> dict:
         url = item.get("contest_url", "")
@@ -139,10 +144,13 @@ def _fmt_time(val) -> str:
     if not val:
         return ""
     s = str(val)
-    # 已经是 "2026/09/10 18:00:00" 格式
-    if "/" in s:
-        parts = s.split(" ")[0].split("/")
-        if len(parts) == 3:
+    # "2026/09/10 18:00:00" 或 "2026-09-10 18:00:00" 格式，只取日期部分
+    sep = "/" if "/" in s else "-"
+    if sep in s and len(s) >= 10:
+        space_idx = s.find(" ")
+        date_part = s[:space_idx] if space_idx > 0 else s
+        parts = date_part.split(sep)
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
             return "-".join(parts)
     # Unix 时间戳
     if s.isdigit() and len(s) >= 10:
@@ -188,3 +196,10 @@ def _join_organizers(detail: dict) -> str:
     if co:
         parts.append("协办: " + "、".join(co))
     return " | ".join(parts) if parts else ""
+
+
+# ---- 自注册 ----
+from ..registry import SourceRegistry  # noqa: E402
+from ..clients.saikr import SaikrAPIClient  # noqa: E402
+
+SourceRegistry.register("saikr", SaikrAPIClient, SaikrParser)
