@@ -157,7 +157,7 @@ class MainAgent:
             return self._build_output(
                 task_id=self._get_task_id(previous_result),
                 status="need_input",
-                data={"final_answer": "当前对话中还没有可展开的推荐结果，请先完成一次竞赛推荐。"},
+                data={"final_answer": "我还没有拿到可供展开的推荐结果。你可以先告诉我想找哪类竞赛，我会从推荐开始帮你梳理。"},
                 message="No previous recommendation is available.",
                 next_action="Run a recommendation task first.",
                 metadata={"followup_type": "competition_detail"},
@@ -199,18 +199,18 @@ class MainAgent:
 
         if len(text) <= 16 and any(word in text for word in ["你好", "您好", "在吗", "hello", "hi"]):
             answer = (
-                "你好，我可以帮你收集和提取竞赛信息、根据个人情况推荐竞赛，"
-                "也可以基于选定竞赛生成报名材料。你现在想先做哪一步？"
+                "你好，我在。你可以直接说说现在遇到的问题：想找适合自己的竞赛、"
+                "看懂一份竞赛通知，或者准备报名材料都可以。"
             )
             control_type = "greeting"
         elif len(text) <= 20 and any(word in text for word in ["谢谢", "感谢", "辛苦了"]):
-            answer = "不客气。你可以继续询问竞赛详情，或让我基于某个推荐生成申报材料。"
+            answer = "不客气。如果你还想比较几个竞赛，或者要继续准备报名材料，直接接着说就好。"
             control_type = "acknowledgement"
         elif self._is_clearly_out_of_scope(text, state):
             answer = (
-                "这个问题暂时不在赛智通的服务范围内。我目前专注于大学生科研与竞赛："
-                "竞赛信息收集、通知提取、项目推荐、竞赛详情解答和申报材料生成。"
-                "你可以换成相关问题，例如“帮我推荐人工智能竞赛”或“给第二个竞赛生成报名简历”。"
+                "这个方向我暂时帮得不够专业。我更擅长大学生科研与竞赛相关的事情，"
+                "比如找竞赛、整理通知、做匹配推荐和准备申报材料。"
+                "如果你愿意，可以直接告诉我你的专业和想参加的竞赛方向，我们从这里开始。"
             )
             control_type = "out_of_scope"
         else:
@@ -918,19 +918,19 @@ If no agent is needed, selected_agents must be empty.
     def _build_final_answer(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:
         planning = planning or {}
         if planning.get("need_user_input"):
-            missing = ", ".join(str(item) for item in planning.get("missing_information", []))
-            return f"More user input is needed: {missing}" if missing else "More user input is needed."
+            return "还差一点关键信息。你补充后，我就能继续处理。"
 
         if not agent_results:
-            return "No agent was selected."
+            return "我还没能确定下一步怎么处理。你可以换一种说法，告诉我想找竞赛、整理通知，还是准备材料。"
 
-        lines = []
-        for result in agent_results:
-            agent_name = result.get("agent_name", "unknown")
-            status = result.get("status", "unknown")
-            message = result.get("message", "")
-            lines.append(f"- {agent_name}: {status}. {message}".strip())
-        return "\n".join(lines)
+        statuses = [result.get("status", "failed") for result in agent_results]
+        if all(status == "success" for status in statuses):
+            return "已经处理完成。你可以继续问我其中某个竞赛的详情，或者选择一个项目准备报名材料。"
+        if any(status == "success" for status in statuses):
+            return "我已经整理出一部分结果，不过还有少量信息没有完整获取。建议你先查看现有内容，我会把需要核实的地方保留下来。"
+        if any(status == "need_input" for status in statuses):
+            return "还需要你补充一点信息，我才能继续给出可靠结果。"
+        return "这次处理没有顺利完成，可能是数据源或模型服务暂时不可用。你可以稍后重试，我会保留已经提供的条件。"
 
     def _resolve_final_status(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:
         planning = planning or {}
