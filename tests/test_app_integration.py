@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app import (
     _apply_turn_understanding,
+    _build_conversation_summary,
     _chat_standard_input,
     _next_chat_question,
     _update_chat_state,
@@ -563,3 +564,94 @@ def test_turn_understanding_falls_back_cleanly_when_llm_is_disabled(monkeypatch)
     monkeypatch.setattr(agent, "_is_llm_enabled", lambda: False)
 
     assert agent.understand_conversation_turn("没有硬性要求", new_chat_state()) is None
+
+
+def test_llm_action_expands_recommendations_without_phrase_rules():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+    }
+    state = _update_chat_state(state, "结果显得有些单薄", understanding={
+        "intent": "recommendation",
+        "dialogue_action": "expand_recommendations",
+        "response_mode": "run_agent",
+        "recommendation_options": {"top_n": 6, "include_backup": True},
+    })
+
+    request = _chat_standard_input(state, "结果显得有些单薄")
+    rules = request["input_data"]["recommendation_rules"]
+    assert rules["top_n"] == 6
+    assert rules["quality_gate"]["prefer_fewer"] is False
+    assert request["user_input"] == "结果显得有些单薄"
+
+
+def test_conversation_context_is_compacted_for_agent_input():
+    state = new_chat_state()
+    for index in range(12):
+        state = _update_chat_state(state, f"第{index}轮普通补充")
+    state["major"] = "计算机科学与技术"
+    state["grade"] = "大三"
+    state["conversation_summary"] = _build_conversation_summary(state)
+
+    request = _chat_standard_input(state, "继续")
+    assert len(state["turns"]) == 8
+    assert len(request["context"]["recent_turns"]) == 4
+    assert "专业：计算机科学与技术" in request["context"]["conversation_summary"]
+    assert "；".join(state["turns"]) not in request["user_input"]
+
+
+def test_major_change_starts_fresh_recommendation_context():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "skills": ["Python", "C++"],
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+        "competition_level": "国家级",
+        "competition_level_confirmed": True,
+        "last_result": {"status": "success"},
+        "project_name": "人工智能竞赛",
+    }
+
+    state = _update_chat_state(state, "我现在是金融专业的，想看看新的比赛", understanding={
+        "intent": "recommendation",
+        "dialogue_action": "profile_change",
+        "major": "金融学",
+        "corrected_fields": ["major"],
+    })
+
+    assert state["major"] == "金融学"
+    assert state["skills"] == []
+    assert state["competition_type"] == ""
+    assert state["competition_level"] == ""
+    assert state["last_result"] == {}
+    assert state["project_name"] == ""
+    assert "金融学专业重新梳理" in state["last_acknowledgement"]
+    assert _next_chat_question(state) is not None
+
+
+def test_cross_disciplinary_scope_does_not_repeat_direction_question():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大一",
+    }
+    state = _update_chat_state(state, "可以接受跨学科，计算机相关也行", understanding={
+        "intent": "recommendation",
+        "dialogue_action": "change_preferences",
+        "competition_scope": "both",
+        "competition_type_status": "no_preference",
+        "competition_level_status": "unknown",
+        "acknowledgement": "明白了，本专业相关和跨学科方向都可以考虑。",
+    })
+
+    assert state["competition_scope"] == "both"
+    assert state["competition_type_confirmed"] is True
+    question = _next_chat_question(state)
+    assert "级" in question
+    assert "跨学科方向" not in question
