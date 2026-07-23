@@ -156,12 +156,24 @@ class MainAgent:
             key: state.get(key)
             for key in [
                 "intent", "major", "grade", "skills", "skill_gaps", "competition_type",
-                "competition_level", "development_goals", "available_time_per_week",
+                "competition_scope", "competition_level", "development_goals", "available_time_per_week",
                 "team_preference", "project_name", "material_type",
+                "conversation_summary", "dialogue_action", "recommendation_options",
             ]
         }
         schema = {
             "intent": "collect|extract|recommendation|material|full_process|empty",
+            "dialogue_action": (
+                "continue|profile_change|new_recommendation|expand_recommendations|explain_recommendation_count|"
+                "compare_recommendations|competition_detail|change_preferences|generate_material|chat"
+            ),
+            "response_mode": "run_agent|answer_from_context|ask_clarification",
+            "recommendation_options": {
+                "top_n": "integer 1-10 or null",
+                "include_backup": "boolean or null",
+                "relax_quality_gate": "boolean or null",
+                "explanation_requested": "boolean",
+            },
             "major": "string or empty",
             "grade": "大一|大二|大三|大四|研究生|empty",
             "skills_add": ["string"],
@@ -169,6 +181,7 @@ class MainAgent:
             "skills_status": "provided|no_preference|unknown",
             "competition_type": "string or empty",
             "competition_type_status": "provided|no_preference|unknown",
+            "competition_scope": "major_aligned|cross_disciplinary|both|unknown",
             "excluded_competition_types": ["string"],
             "competition_level": "国际级|国家级|省级|校级|empty",
             "competition_level_status": "provided|no_preference|unknown",
@@ -191,7 +204,15 @@ class MainAgent:
                         "否定、排除和无偏好信息。不要猜测未表达的专业、能力或目标；‘不会Python但会Java’"
                         "必须分别放入skills_remove和skills_add；‘除了数学建模都可以’必须放入排除项；"
                         "‘没有硬性要求’要结合上下文判断当前被询问字段并标记no_preference。"
+                        "用户说贴近本专业、接受跨学科、两者都行时，分别输出competition_scope为"
+                        "major_aligned、cross_disciplinary、both；如果用户只确认范围但没有具体主题，"
+                        "competition_type_status应为no_preference，避免重复追问同一个范围问题。"
                         "用户取消材料并要求重新推荐时intent必须是recommendation。已有intent在用户没有明确换任务时应保持。"
+                        "如果用户明确给出与已有状态不同的专业或身份，dialogue_action必须是profile_change，"
+                        "把major列入corrected_fields，并将新专业写入major。"
+                        "还要判断本轮对话动作，而不是依赖固定措辞：用户认为结果少、要求更多、换一批或接受次优候选时，"
+                        "dialogue_action用expand_recommendations，并给出合理的recommendation_options；只询问为什么结果少时，"
+                        "用explain_recommendation_count和answer_from_context；询问上一轮某项详情或比较时，不要当成新推荐。"
                         "acknowledgement要像自然对话，优先使用‘明白了’‘了解’‘这样我就清楚了’，"
                         "不要使用‘已记录’‘字段’‘状态’等系统日志口吻。只输出JSON。"
                     ),

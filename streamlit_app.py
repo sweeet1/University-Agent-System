@@ -13,6 +13,7 @@ from app import (
     _chat_standard_input,
     _next_chat_question,
     _result_downloads,
+    _semantic_followup_answer,
     _update_chat_state,
     load_config,
     new_chat_state,
@@ -230,6 +231,11 @@ def run_conversation_turn(prompt: str) -> None:
         understanding=understanding,
     )
     st.session_state.chat_state = state
+    semantic_answer = _semantic_followup_answer(state, understanding)
+    if semantic_answer:
+        st.session_state.messages.append({"role": "assistant", "content": semantic_answer})
+        st.session_state.last_status = "已结合上一轮结果回答"
+        return
     question = _next_chat_question(state)
     if question:
         acknowledgement = str(state.get("last_acknowledgement", "")).strip()
