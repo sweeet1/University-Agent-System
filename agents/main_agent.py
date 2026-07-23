@@ -130,6 +130,100 @@ class MainAgent:
             },
         )
 
+    def understand_conversation_turn(
+        self,
+        user_input: str,
+        conversation_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Interpret one natural-language turn into conservative state updates.
+
+        The result supplements deterministic parsing. Invalid output or an unavailable
+        model returns ``None`` so the conversation can continue locally.
+        """
+        text = str(user_input or "").strip()
+        if not text or not self._is_llm_enabled():
+            return None
+
+        llm_config = self.config.get("llm", {}) if isinstance(self.config, dict) else {}
+        api_key_env = llm_config.get("api_key_env", "DEEPSEEK_API_KEY")
+        api_key = llm_config.get("api_key", "") or os.getenv(str(api_key_env), "")
+        if not api_key:
+            return None
+        base_url = llm_config.get("base_url") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        model = llm_config.get("model") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        state = conversation_state or {}
+        state_summary = {
+            key: state.get(key)
+            for key in [
+                "intent", "major", "grade", "skills", "skill_gaps", "competition_type",
+                "competition_level", "development_goals", "available_time_per_week",
+                "team_preference", "project_name", "material_type",
+            ]
+        }
+        schema = {
+            "intent": "collect|extract|recommendation|material|full_process|empty",
+            "major": "string or empty",
+            "grade": "大一|大二|大三|大四|研究生|empty",
+            "skills_add": ["string"],
+            "skills_remove": ["string explicitly negated by user"],
+            "skills_status": "provided|no_preference|unknown",
+            "competition_type": "string or empty",
+            "competition_type_status": "provided|no_preference|unknown",
+            "excluded_competition_types": ["string"],
+            "competition_level": "国际级|国家级|省级|校级|empty",
+            "competition_level_status": "provided|no_preference|unknown",
+            "preferred_levels": ["string"],
+            "acceptable_levels": ["string"],
+            "excluded_levels": ["string"],
+            "development_goals": ["保研|考研|留学|就业|创业|兴趣提升"],
+            "available_time_per_week": "number or null",
+            "team_preference": "个人赛|团队赛|无偏好|empty",
+            "corrected_fields": ["仅列出用户本轮明确纠正的字段名"],
+            "acknowledgement": "不超过45字，自然承接用户的话，不提问",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你负责理解大学生竞赛助手中的单轮用户表达。结合已有状态抽取本轮明确新增、修改、"
+                        "否定、排除和无偏好信息。不要猜测未表达的专业、能力或目标；‘不会Python但会Java’"
+                        "必须分别放入skills_remove和skills_add；‘除了数学建模都可以’必须放入排除项；"
+                        "‘没有硬性要求’要结合上下文判断当前被询问字段并标记no_preference。"
+                        "用户取消材料并要求重新推荐时intent必须是recommendation。已有intent在用户没有明确换任务时应保持。"
+                        "acknowledgement要像自然对话，优先使用‘明白了’‘了解’‘这样我就清楚了’，"
+                        "不要使用‘已记录’‘字段’‘状态’等系统日志口吻。只输出JSON。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"已有状态：{json.dumps(state_summary, ensure_ascii=False)}\n"
+                        f"本轮用户输入：{text}\n"
+                        f"输出结构：{json.dumps(schema, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            "max_tokens": 900,
+        }
+        request = urllib.request.Request(
+            url=base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=int(llm_config.get("timeout", 30))) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+            content = response_data["choices"][0]["message"]["content"]
+            parsed = self._parse_json_object(content)
+            return parsed if isinstance(parsed, dict) else None
+        except (urllib.error.URLError, KeyError, IndexError, ValueError, json.JSONDecodeError, TimeoutError):
+            return None
+
     def handle_followup(
         self,
         user_input: str,
@@ -149,6 +243,18 @@ class MainAgent:
             # The UI is waiting for the user to select which recommendation
             # should be passed to MaterialAgent. Ordinals belong to that flow.
             return None
+        if self._is_comparison_request(user_input):
+            recommendations = self._recommendations_from_result(previous_result)
+            if len(recommendations) < 2:
+                return None
+            answer = self._build_comparison_answer(recommendations, user_input, state)
+            return self._build_output(
+                task_id=self._get_task_id(previous_result),
+                status="success",
+                data={"final_answer": answer, "compared_competitions": recommendations[:3]},
+                message="MainAgent compared previous recommendations.",
+                metadata={"followup_type": "competition_comparison", "generation_source": "deterministic"},
+            )
         if not self._is_competition_detail_request(user_input):
             return None
 
@@ -163,9 +269,28 @@ class MainAgent:
                 metadata={"followup_type": "competition_detail"},
             )
 
-        selected = self._select_recommendation_for_detail(recommendations, user_input)
-        fallback = self._build_competition_detail_fallback(selected)
-        generated = self._call_detail_llm(user_input, selected)
+        selected = self._select_recommendation_for_detail(
+            recommendations,
+            user_input,
+            preferred_title=str(state.get("project_name", "")),
+        )
+        if selected is None:
+            choices = "；".join(
+                f"{index}. {item.get('title', '未命名竞赛')}"
+                for index, item in enumerate(recommendations, 1)
+            )
+            return self._build_output(
+                task_id=self._get_task_id(previous_result),
+                status="need_input",
+                data={"final_answer": f"我知道你在接着问上一轮推荐，不过还不能确定你指的是哪一个。回复序号或名称就行：{choices}"},
+                message="A recommendation reference needs clarification.",
+                next_action="ask_user",
+                metadata={"followup_type": "competition_reference_clarification"},
+            )
+        fallback = self._build_competition_detail_fallback(selected, user_input)
+        generated = {"content": "", "error": None}
+        if not self._is_direct_field_question(user_input):
+            generated = self._call_detail_llm(user_input, selected)
         answer = generated.get("content") or fallback
         source_url = str(selected.get("source_url", "")).strip()
         if source_url:
@@ -197,13 +322,14 @@ class MainAgent:
         if not text:
             return None
 
-        if len(text) <= 16 and any(word in text for word in ["你好", "您好", "在吗", "hello", "hi"]):
+        normalized = re.sub(r"[\s，,。.!！?？]", "", text).lower()
+        if normalized in {"你好", "您好", "在吗", "hello", "hi", "嗨"}:
             answer = (
                 "你好，我在。你可以直接说说现在遇到的问题：想找适合自己的竞赛、"
                 "看懂一份竞赛通知，或者准备报名材料都可以。"
             )
             control_type = "greeting"
-        elif len(text) <= 20 and any(word in text for word in ["谢谢", "感谢", "辛苦了"]):
+        elif normalized in {"谢谢", "感谢", "辛苦了", "多谢", "谢谢你"}:
             answer = "不客气。如果你还想比较几个竞赛，或者要继续准备报名材料，直接接着说就好。"
             control_type = "acknowledgement"
         elif self._is_clearly_out_of_scope(text, state):
@@ -253,7 +379,21 @@ class MainAgent:
         return any(keyword in text for keyword in [
             "详细了解", "详细介绍", "具体介绍", "竞赛详情", "项目详情",
             "展开说说", "详细说说", "第一个", "第二个", "第三个",
+            "什么时候", "截止", "报名", "组队", "团队", "主办方", "含金量",
+            "难度", "适合我", "这个比赛", "这个竞赛", "它",
         ])
+
+    @staticmethod
+    def _is_comparison_request(message: str) -> bool:
+        text = str(message or "").strip()
+        return any(keyword in text for keyword in [
+            "对比", "比较", "哪个更", "哪一个更", "前两个", "这几个",
+        ])
+
+    @staticmethod
+    def _is_direct_field_question(message: str) -> bool:
+        text = str(message or "").strip()
+        return any(keyword in text for keyword in ["什么时候", "截止", "报名时间", "组队", "团队", "主办方"])
 
     def _recommendations_from_result(self, result: dict[str, Any]) -> list[dict[str, Any]]:
         for agent_result in result.get("data", {}).get("agent_results", []):
@@ -266,7 +406,8 @@ class MainAgent:
         self,
         recommendations: list[dict[str, Any]],
         message: str,
-    ) -> dict[str, Any]:
+        preferred_title: str = "",
+    ) -> dict[str, Any] | None:
         ordinal_map = {
             "第一个": 0, "第一项": 0, "第1个": 0,
             "第二个": 1, "第二项": 1, "第2个": 1,
@@ -275,6 +416,11 @@ class MainAgent:
         for marker, index in ordinal_map.items():
             if marker in message and index < len(recommendations):
                 return recommendations[index]
+
+        if preferred_title:
+            for recommendation in recommendations:
+                if str(recommendation.get("title", "")) == preferred_title:
+                    return recommendation
 
         query = str(message or "").strip()
         for phrase in [
@@ -289,10 +435,24 @@ class MainAgent:
                 title = str(recommendation.get("title", ""))
                 if query in title or any(token in title for token in tokens):
                     return recommendation
-        return recommendations[0]
+        if len(recommendations) == 1:
+            return recommendations[0]
+        return None
 
-    def _build_competition_detail_fallback(self, selected: dict[str, Any]) -> str:
+    def _build_competition_detail_fallback(self, selected: dict[str, Any], user_input: str = "") -> str:
         title = str(selected.get("title") or "未命名项目")
+        text = str(user_input or "")
+        if any(keyword in text for keyword in ["什么时候", "截止", "报名时间"]):
+            deadline = str(selected.get("deadline") or "").strip()
+            if deadline and deadline.lower() != "unknown":
+                return f"**{title}** 当前记录的报名截止时间是 **{deadline}**。时间可能调整，提交前最好再到官网确认一次。"
+            return f"目前的数据里没有 **{title}** 的可靠报名截止时间。我不想替你猜，建议打开原始页面核实最新通知。"
+        if any(keyword in text for keyword in ["组队", "团队"]):
+            requirements = selected.get("requirements", {}) if isinstance(selected.get("requirements"), dict) else {}
+            team_requirement = str(requirements.get("team_requirement") or selected.get("team_requirement") or "").strip()
+            if team_requirement and team_requirement.lower() != "unknown":
+                return f"**{title}** 当前记录的组队要求是：{team_requirement}。"
+            return f"目前的数据里没有明确写出 **{title}** 是否需要组队。这个条件会影响报名，建议以官网通知为准。"
         lines = [f"### {title}"]
         fields = [
             ("", selected.get("summary")),
@@ -306,6 +466,25 @@ class MainAgent:
             if not value or value.lower() == "unknown":
                 continue
             lines.append(value if not label else f"- **{label}：** {value}")
+        return "\n\n".join(lines)
+
+    def _build_comparison_answer(
+        self,
+        recommendations: list[dict[str, Any]],
+        user_input: str,
+        state: dict[str, Any],
+    ) -> str:
+        selected = recommendations[:2]
+        goal = "保研" if "保研" in user_input or "保研" in state.get("development_goals", []) else "你的当前需求"
+        lines = [f"可以，我先按**{goal}**来比较前两个候选："]
+        for index, item in enumerate(selected, 1):
+            title = str(item.get("title") or f"候选 {index}")
+            score = item.get("match_score")
+            reason = str(item.get("reason") or item.get("summary") or "现有数据没有给出完整推荐理由").strip()
+            deadline = str(item.get("deadline") or "待核实").strip()
+            score_text = f"，匹配分 {score}" if score not in {None, ""} else ""
+            lines.append(f"{index}. **{title}**{score_text}；截止时间：{deadline}；{reason}")
+        lines.append("如果以保研为目标，还需要结合你所在学校的竞赛认定目录判断，当前数据不能直接证明某项比赛一定能获得加分。")
         return "\n\n".join(lines)
 
     def _call_detail_llm(
@@ -331,9 +510,10 @@ class MainAgent:
                 {
                     "role": "system",
                     "content": (
-                        "你是大学生竞赛顾问。只能根据提供的数据回答，不得虚构。"
-                        "请用中文简要说明竞赛概况、适合人群、时间提醒、与用户的匹配原因，"
-                        "并指出仍需到官网核实的信息。回答控制在600字以内。"
+                        "你是大学生竞赛顾问。严格回答用户实际提出的问题，只能使用竞赛数据中明确存在的事实。"
+                        "数据没有提供的内容必须直接说‘当前信息未提供’，禁止根据常见竞赛经验推测参赛人群、"
+                        "语言、赛制、奖项、题库、培训、就业或升学价值。先给直接结论，再简要说明依据，"
+                        "最后列出确实需要官网核实的事项。回答控制在400字以内。"
                     ),
                 },
                 {
@@ -341,8 +521,8 @@ class MainAgent:
                     "content": f"用户问题：{user_input}\n竞赛数据：{json.dumps(source_data, ensure_ascii=False)}",
                 },
             ],
-            "temperature": 0.2,
-            "max_tokens": 900,
+            "temperature": 0.0,
+            "max_tokens": 650,
         }
         request = urllib.request.Request(
             url=base_url.rstrip("/") + "/chat/completions",

@@ -74,6 +74,7 @@ class MaterialAgent:
         "generic_team_description",
         "generic_budget",
         "generic_schedule",
+        "generic_personal_resume",
     }
 
     # ---- 合法的输出格式 ----
@@ -433,6 +434,14 @@ class MaterialAgent:
         else:
             inference_note = ""
 
+        # ---- Step 3: 预检关键字段，缺太多则追问 ----
+        missing_check = self._check_missing_fields(project_info, material_type, user_profile)
+        if missing_check["need_input"]:
+            return {
+                "_status": "need_input",
+                "_message": missing_check["message"],
+            }
+
         # ---- Step 4: 选择 Prompt 模板 ----
         if material_type not in self.prompt_templates:
             return {
@@ -489,6 +498,60 @@ class MaterialAgent:
         return result
 
     # ============================================================
+    # ============================================================
+    # _check_missing_fields — 预检关键字段
+    # ============================================================
+
+    def _check_missing_fields(self, project_info: dict, material_type: str,
+                               user_profile: dict) -> dict:
+        """汇总缺失字段，全部可选，用户自主决定提供哪些。"""
+        if "checklist" in material_type or material_type in (
+            "generic_budget",
+            "generic_team_description",
+            "generic_schedule",
+            "generic_personal_resume",
+        ):
+            return {"need_input": False, "message": ""}
+
+        missing = []
+        summary = project_info.get("summary", "")
+        background = project_info.get("background", "")
+        approach = project_info.get("technical_approach", "") or project_info.get("solution", "")
+        innovations = project_info.get("innovation_points", [])
+        team = project_info.get("team_members", [])
+        advisor = project_info.get("advisor", {})
+
+        if not summary or len(str(summary)) < 10:
+            missing.append("项目简介（一两句话说一下项目是做什么的）")
+        if not background or len(str(background)) < 10:
+            missing.append("项目背景（要解决什么问题）")
+        if not approach:
+            missing.append("技术方案或解决方案（怎么实现的）")
+        if not innovations or len(innovations) == 0:
+            missing.append("创新点（有什么不同）")
+        if not team or len(team) == 0:
+            missing.append("团队成员姓名和分工")
+        if not advisor:
+            missing.append("指导教师姓名和研究方向")
+        if not user_profile or not user_profile.get("name", ""):
+            missing.append("你的姓名")
+
+        # 检查用户是否已提供了任何信息（超过项目名就算有输入）
+        has_any_info = bool(
+            summary or background or approach or innovations or team or advisor
+        )
+
+        if not has_any_info and missing:
+            msg = "以下信息可以帮你生成更完整的材料，全部可选，你提供多少我填多少：\n\n"
+            for i, m in enumerate(missing, 1):
+                msg += f"  {i}. {m}\n"
+            msg += "\n回复你想提供的即可，不想提供的可以跳过，或直接说「生成」。"
+            return {"need_input": True, "message": msg}
+
+        # 用户已提供部分信息 → 直接生成，不再追问
+        return {"need_input": False, "message": ""}
+
+    # ============================================================
     # _infer_material_type — 推断材料类型
     # ============================================================
 
@@ -515,7 +578,8 @@ class MaterialAgent:
         """
         # 候选匹配文本（按优先级）
         candidates = []
-        comp_name = competition_info.get("competition_name", "")
+        # 兼容 title 和 competition_name 两种传法
+        comp_name = competition_info.get("competition_name") or competition_info.get("title", "")
         comp_type = competition_info.get("competition_type", "")
         if comp_name:
             candidates.append(comp_name)
@@ -544,6 +608,19 @@ class MaterialAgent:
                         "alternatives": alternatives,
                         "message": f"根据'{keyword}'推断为{default_type}。如需其他材料类型，请在 material_type 中明确指定。",
                     }
+
+        # 通用兜底：竞赛名称含"大赛"/"竞赛"/"杯"，默认用通用申报书
+        for keyword in ["大赛", "竞赛", "杯"]:
+            if keyword in comp_name or keyword in user_input:
+                alternatives = ["generic_application_form", "generic_project_report",
+                               "generic_ppt", "generic_team_description",
+                               "generic_budget", "generic_schedule"]
+                return {
+                    "material_type": "generic_application_form",
+                    "confidence": "inferred",
+                    "alternatives": alternatives,
+                    "message": f"未匹配到特定竞赛类型，根据'{keyword}'推断为通用申报书。如需其他材料类型，请明确指定。",
+                }
 
         # 无法推断
         return {
@@ -705,7 +782,8 @@ class MaterialAgent:
         )
 
         # ---- 竞赛信息映射 ----
-        variables["competition_name"] = competition_info.get("competition_name", "")
+        # 兼容 title 和 competition_name 两种传法
+        variables["competition_name"] = competition_info.get("competition_name") or competition_info.get("title", "")
         variables["track"] = competition_info.get("track", "")
         variables["group"] = competition_info.get("group", "")
         variables["deadline"] = competition_info.get("deadline", "")

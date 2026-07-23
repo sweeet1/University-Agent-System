@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from app import (
+    _apply_turn_understanding,
     _chat_standard_input,
     _next_chat_question,
     _update_chat_state,
@@ -351,3 +352,214 @@ def test_chat_groups_basic_profile_questions_naturally():
     assert "专业" in question
     assert "读大几" in question
     assert "请输入" not in question
+
+
+def test_chat_accepts_explicit_no_level_preference_without_repeating_question():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大三学生，想参加人工智能竞赛",
+    )
+    state = _update_chat_state(state, "没有硬性要求，什么级别都可以")
+
+    assert state["competition_level_confirmed"] is True
+    assert state["competition_level"] == ""
+    assert "级别" not in (_next_chat_question(state) or "")
+
+
+def test_chat_accepts_explicit_no_category_preference():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大二学生，想找国家级竞赛",
+    )
+    state = _update_chat_state(state, "方向没有偏好，都可以")
+
+    assert state["competition_type_confirmed"] is True
+    assert state["competition_type"] == ""
+    assert "哪个方向" not in (_next_chat_question(state) or "")
+
+
+def test_chat_does_not_treat_excluded_category_as_preference():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机大三，除了数学建模都可以，想要竞赛推荐",
+    )
+
+    assert state["competition_type"] != "数学建模"
+    assert "数学建模" in state["excluded_competition_types"]
+
+
+def test_chat_distinguishes_known_skills_from_skill_gaps():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机大三，想参加国家级算法竞赛，我不会Python但会Java",
+    )
+
+    assert state["skills"] == ["Java"]
+    assert state["skill_gaps"] == ["Python"]
+
+
+def test_chat_extracts_richer_profile_from_natural_sentence():
+    state = _update_chat_state(
+        new_chat_state(),
+        "大三网络工程，平时会Go和Linux，想为保研积累项目，每周大概8小时，最好个人赛",
+    )
+
+    assert state["major"] == "网络工程"
+    assert state["grade"] == "大三"
+    assert state["skills"] == ["Go", "Linux"]
+    assert state["development_goals"] == ["保研"]
+    assert state["available_time_per_week"] == 8.0
+    assert state["team_preference"] == "个人赛"
+
+
+def test_chat_understands_research_grade_and_more_skill_aliases():
+    state = _update_chat_state(
+        new_chat_state(),
+        "自动化研一，会MATLAB，想参加控制类竞赛",
+    )
+
+    assert state["major"] == "自动化"
+    assert state["grade"] == "研究生"
+    assert state["skills"] == ["MATLAB"]
+    assert state["competition_type"] == "自动化与控制"
+
+
+def test_chat_correction_ignores_rejected_major():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机大二，想参加国家级算法竞赛",
+    )
+    state = _update_chat_state(state, "不是计算机，专业是金融")
+
+    assert state["major"] == "金融学"
+
+
+def test_cancel_material_request_returns_to_recommendation():
+    state = _update_chat_state(new_chat_state(), "帮我生成报名材料")
+    state = _update_chat_state(state, "不生成材料了，重新推荐算法竞赛")
+
+    assert state["intent"] == "recommendation"
+
+
+def test_greeting_or_thanks_do_not_swallow_a_real_task():
+    agent = MainAgent(config={})
+
+    assert agent.handle_conversation_control("你好，推荐AI竞赛", new_chat_state()) is None
+    assert agent.handle_conversation_control("谢谢，帮我生成报名材料", new_chat_state()) is None
+
+
+def test_natural_followup_field_question_requests_reference_clarification():
+    previous_result = {
+        "task_id": "recommendation-result",
+        "data": {"agent_results": [{"data": {"recommendations": [
+            {"title": "人工智能创新赛", "deadline": "2026-09-01"},
+            {"title": "算法程序设计赛", "deadline": "2026-10-01"},
+        ]}}]},
+    }
+
+    result = MainAgent(config={}).handle_followup(
+        "它什么时候截止报名？",
+        previous_result,
+        {**new_chat_state(), "intent": "recommendation"},
+    )
+
+    assert result is not None
+    assert result["status"] == "need_input"
+    assert "不能确定你指的是哪一个" in result["data"]["final_answer"]
+
+
+def test_natural_followup_uses_selected_project_and_answers_known_deadline():
+    previous_result = {
+        "task_id": "recommendation-result",
+        "data": {"agent_results": [{"data": {"recommendations": [
+            {"title": "人工智能创新赛", "deadline": "2026-09-01"},
+            {"title": "算法程序设计赛", "deadline": "2026-10-01"},
+        ]}}]},
+    }
+
+    result = MainAgent(config={}).handle_followup(
+        "它什么时候截止报名？",
+        previous_result,
+        {**new_chat_state(), "intent": "recommendation", "project_name": "算法程序设计赛"},
+    )
+
+    assert result is not None
+    assert result["status"] == "success"
+    assert "2026-10-01" in result["data"]["final_answer"]
+    assert result["metadata"]["generation_source"] == "fallback"
+
+
+def test_followup_can_compare_previous_recommendations_for_goal():
+    previous_result = {
+        "task_id": "recommendation-result",
+        "data": {"agent_results": [{"data": {"recommendations": [
+            {"title": "人工智能创新赛", "match_score": 82, "reason": "方向匹配"},
+            {"title": "算法程序设计赛", "match_score": 76, "reason": "技能匹配"},
+        ]}}]},
+    }
+
+    result = MainAgent(config={}).handle_followup(
+        "哪个更适合保研？",
+        previous_result,
+        {**new_chat_state(), "intent": "recommendation", "development_goals": ["保研"]},
+    )
+
+    assert result is not None
+    assert result["metadata"]["followup_type"] == "competition_comparison"
+    assert "人工智能创新赛" in result["data"]["final_answer"]
+    assert "算法程序设计赛" in result["data"]["final_answer"]
+    assert "认定目录" in result["data"]["final_answer"]
+
+
+def test_structured_turn_understanding_merges_without_losing_existing_state():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "网络工程",
+        "grade": "大三",
+    }
+
+    state = _apply_turn_understanding(state, {
+        "intent": "recommendation",
+        "skills_add": ["Go", "Linux"],
+        "skills_remove": ["Python"],
+        "competition_level_status": "no_preference",
+        "development_goals": ["保研"],
+        "available_time_per_week": 8,
+        "team_preference": "个人赛",
+        "acknowledgement": "明白了，我会按保研目标和个人赛偏好来筛选。",
+    })
+
+    assert state["major"] == "网络工程"
+    assert state["skills"] == ["Go", "Linux"]
+    assert state["skill_gaps"] == ["Python"]
+    assert state["competition_level_confirmed"] is True
+    assert state["development_goals"] == ["保研"]
+    assert state["available_time_per_week"] == 8.0
+    assert state["last_acknowledgement"].startswith("明白了")
+
+
+def test_llm_understanding_cannot_overwrite_a_known_intent_without_transition():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+    }
+
+    state = _apply_turn_understanding(state, {
+        "intent": "extract",
+        "competition_type": "算法竞赛",
+        "competition_level_status": "no_preference",
+    })
+
+    assert state["intent"] == "recommendation"
+    assert state["competition_type"] == "人工智能"
+    assert state["competition_level_confirmed"] is True
+
+
+def test_turn_understanding_falls_back_cleanly_when_llm_is_disabled(monkeypatch):
+    agent = MainAgent(config={})
+    monkeypatch.setattr(agent, "_is_llm_enabled", lambda: False)
+
+    assert agent.understand_conversation_turn("没有硬性要求", new_chat_state()) is None

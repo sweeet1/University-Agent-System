@@ -1,0 +1,32 @@
+# 兴趣 / 标签同义词组（勿把「计算机」并入 AI）
+# 修改本文件即可调整匹配，无需改代码。
+#
+# 格式：
+# synonym_groups:
+#   - [词1, 词2, ...]
+
+synonym_groups:
+  - [ai, 人工智能, artificial intelligence]
+  - [cv, 计算机视觉, computer vision]
+  - [nlp, 自然语言处理, natural language processing]
+  - [ml, 机器学习, machine learning]
+  - [data, 数据分析, 数据科学, data science, 统计科学]
+  - [web, 前端, 后端, 全栈, web开发]
+  - [算法竞赛, 算法编程, 算法, acm, acm赛制, 编程]
+  - [数学建模, 数学竞赛, 建模]
+  - [计算机, 计算机能力, 计算机素养, cs]
+  - [博弈, 计算机博弈]
+  - [英语, 商务英语, 外交英语, 英语竞赛, 翻译]
+
+# 细粒度技能 → 领域归一（能力匹配辅助）
+skill_normalize:
+  数学基础理论: 数学建模
+  建模方法原理: 数学建模
+  数学建模: 数学建模
+  计算机组成原理: 计算机
+  计算机网络: 计算机
+  算法编程: 算法
+  python: 编程
+  java: 编程
+  c++: 编程
+  c语言: 编程

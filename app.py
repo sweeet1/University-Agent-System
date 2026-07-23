@@ -454,8 +454,19 @@ def new_chat_state() -> dict[str, Any]:
         "interests": [],
         "skills": [],
         "skills_skipped": False,
+        "skill_gaps": [],
         "competition_type": "",
+        "competition_type_confirmed": False,
+        "excluded_competition_types": [],
         "competition_level": "",
+        "competition_level_confirmed": False,
+        "preferred_levels": [],
+        "acceptable_levels": [],
+        "excluded_levels": [],
+        "development_goals": [],
+        "available_time_per_week": None,
+        "team_preference": "",
+        "last_acknowledgement": "",
         "notification_text": "",
         "project_name": "",
         "material_type": "",
@@ -489,11 +500,15 @@ def _detect_chat_intent(text: str, current_intent: str = "") -> str:
     strong_material_words = ["报名表", "简历", "计划书", "PPT", "材料清单"]
     general_material_words = ["材料", "资料", "文档", "申报书"]
     generation_words = ["生成", "制作", "撰写", "写一份", "准备", "帮我做", "想要"]
-    recommendation_words = ["推荐", "匹配", "适合", "筛选"]
+    recommendation_words = ["推荐", "匹配", "适合", "筛选", "重新找", "换一批"]
     extraction_words = ["提取", "抽取", "解析", "整理通知", "报名要求"]
     collection_words = ["收集", "搜集", "查找", "搜索", "查询竞赛", "有哪些竞赛"]
 
-    wants_material = (
+    cancels_material = any(
+        phrase in text
+        for phrase in ["不生成材料", "不要材料", "不做材料", "先不做材料", "取消材料"]
+    )
+    wants_material = not cancels_material and (
         any(word in text for word in strong_material_words)
         or (
             any(word in text for word in general_material_words)
@@ -504,6 +519,8 @@ def _detect_chat_intent(text: str, current_intent: str = "") -> str:
     requests_new_recommendation = wants_recommendation and not any(
         phrase in text for phrase in ["刚才推荐", "之前推荐", "上面推荐", "推荐的"]
     )
+    if cancels_material and any(word in text for word in ["推荐", "竞赛", "比赛"]):
+        return "recommendation"
     if "全流程" in text or (wants_material and requests_new_recommendation):
         return "full_process"
     if wants_material:
@@ -543,17 +560,55 @@ def _correction_value_text(text: str) -> str:
     for marker in ["改成", "更正为", "应该是"]:
         if marker in text:
             return text.rsplit(marker, 1)[1].strip(" ，。！？：:") or text
-    match = re.search(r"不是.+?[，,；;\s]+是(.+)$", text)
+    match = re.search(r"不是.+?[，,；;\s]+(?:专业)?(?:是|改成)(.+)$", text)
     if match:
         return match.group(1).strip(" ，。！？：:") or text
     return text
 
 
-def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
+def _contains_negated_term(text: str, term: str) -> bool:
+    escaped = re.escape(term)
+    patterns = [
+        rf"(?:不会|不擅长|不熟悉|不想|不要|不考虑|排除|避开)\s*{escaped}",
+        rf"除了\s*{escaped}\s*(?:以外)?(?:都|之外)",
+    ]
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
+def _append_unique(values: list[str], value: str) -> list[str]:
+    return values if value in values else [*values, value]
+
+
+def _looks_like_notification(text: str) -> bool:
+    """Return True only when the text carries at least one structural signal that
+    suggests it is a pasted competition notice, not just a long chat message
+    listing skills or describing background."""
+    notification_indicators = [
+        # URL
+        r"https?://",
+        # date patterns
+        r"\d{4}年\d{1,2}月\d{1,2}日",
+        r"\d{4}-\d{1,2}-\d{1,2}",
+        r"\d{4}/\d{1,2}/\d{1,2}",
+        # competition structural keywords
+        r"主办方", r"承办方", r"协办方", r"主办单位", r"承办单位",
+        r"参赛对象", r"参赛资格", r"作品要求", r"申报材料",
+        r"报名方式", r"报名截止", r"竞赛简介", r"奖项设置",
+        r"关于举办", r"通知", r"公告",
+    ]
+    return any(re.search(indicator, text) for indicator in notification_indicators)
+
+
+def _update_chat_state(
+    state: dict[str, Any],
+    message: str,
+    understanding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     state = {**new_chat_state(), **(state or {})}
     text = clean_text(message)
     fact_text = _correction_value_text(text)
     state["turns"] = [*state.get("turns", []), text]
+    state["last_acknowledgement"] = ""
 
     state["intent"] = _detect_chat_intent(fact_text, state.get("intent", ""))
 
@@ -562,52 +617,137 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         state["project_name"] = str(selected_project.get("title", ""))
 
     major_aliases = {
-        "计算机": "计算机科学与技术", "软件": "软件工程", "人工智能": "人工智能",
+        "计算机科学与技术": "计算机科学与技术", "计科": "计算机科学与技术", "计算机": "计算机科学与技术",
+        "软件工程": "软件工程", "软工": "软件工程", "软件": "软件工程", "人工智能": "人工智能",
         "数据科学": "数据科学与大数据技术", "电子信息": "电子信息工程",
         "自动化": "自动化", "金融": "金融学", "工商管理": "工商管理",
+        "网络工程": "网络工程", "电子商务": "电子商务", "市场营销": "市场营销",
+        "通信工程": "通信工程", "机械工程": "机械工程", "数学": "数学类",
     }
     for keyword, normalized in major_aliases.items():
+        short_major_answer = fact_text.strip() in {keyword, f"{keyword}专业"}
+        grade_near_major = re.search(
+            rf"(?:大[一二三四]|研[一二三]|研究生)\s*{re.escape(keyword)}|"
+            rf"{re.escape(keyword)}\s*(?:专业|大[一二三四]|研[一二三]|研究生|20\d{{2}}级)",
+            fact_text,
+        )
         if keyword in fact_text and (
             any(marker in fact_text for marker in ["专业", "学生", "我是", "学的"])
-            or len(fact_text) <= 30
+            or grade_near_major
+            or short_major_answer
         ):
             state["major"] = normalized
             break
 
+    research_grade_map = {
+        "研一": "研究生", "研二": "研究生", "研三": "研究生",
+        "硕士": "研究生", "博士": "研究生",
+    }
+    for marker, normalized in research_grade_map.items():
+        if marker in fact_text:
+            state["grade"] = normalized
+            break
     for grade in ["大一", "大二", "大三", "大四", "研究生"]:
         if grade in fact_text:
             state["grade"] = grade
             break
 
+    enrollment_match = re.search(r"(20\d{2})\s*级", fact_text)
+    if enrollment_match and not state.get("grade"):
+        year_index = max(1, date.today().year - int(enrollment_match.group(1)))
+        state["grade"] = {1: "大一", 2: "大二", 3: "大三"}.get(year_index, "大四")
+
     for level in ["国际级", "国家级", "省级", "校级"]:
         if level in fact_text:
             state["competition_level"] = level
+            state["competition_level_confirmed"] = True
+            state["preferred_levels"] = _append_unique(state.get("preferred_levels", []), level)
             break
+
+    for level in ["国际级", "国家级", "省级", "校级"]:
+        if _contains_negated_term(fact_text, level):
+            state["excluded_levels"] = _append_unique(state.get("excluded_levels", []), level)
+            state["preferred_levels"] = [item for item in state.get("preferred_levels", []) if item != level]
+    if any(phrase in fact_text for phrase in [
+        "没有硬性要求", "级别都可以", "不限级别", "级别不限", "什么级别都行", "级别无所谓",
+    ]):
+        state["competition_level"] = ""
+        state["competition_level_confirmed"] = True
 
     type_aliases = {
         "人工智能": "人工智能", "AI": "人工智能", "算法": "算法与程序设计",
         "程序设计": "算法与程序设计", "创新创业": "创新创业", "创业": "创新创业",
-        "科研": "科研学术", "数据分析": "数据分析", "数学建模": "数学建模",
+        "科研": "科研学术", "数据分析": "数据分析", "数据挖掘": "数据分析",
+        "机器学习": "人工智能", "深度学习": "人工智能", "数学建模": "数学建模",
+        "营销策划": "商业与营销", "市场营销": "商业与营销", "控制类": "自动化与控制",
+        "电子设计": "电子设计", "机器人": "机器人", "后端开发": "软件开发",
     }
-    for keyword, normalized in type_aliases.items():
-        if keyword in fact_text:
-            state["competition_type"] = normalized
-            if normalized not in state["interests"]:
-                state["interests"] = [*state["interests"], normalized]
-            break
+    # Only set competition_type from type_aliases when it hasn't been set yet,
+    # or when the user is explicitly correcting it.  This prevents a skill
+    # keyword like "数据分析" or "算法" from overwriting the competition
+    # direction the user stated earlier (e.g. "人工智能").
+    if not state.get("competition_type") or any(
+        marker in fact_text for marker in ["不是", "改成", "更正", "应该是", "换成", "改为"]
+    ):
+        for keyword, normalized in type_aliases.items():
+            if keyword in fact_text:
+                if _contains_negated_term(fact_text, keyword):
+                    state["excluded_competition_types"] = _append_unique(
+                        state.get("excluded_competition_types", []), normalized
+                    )
+                    continue
+                state["competition_type"] = normalized
+                state["competition_type_confirmed"] = True
+                if normalized not in state["interests"]:
+                    state["interests"] = [*state["interests"], normalized]
+                break
 
-    known_skills = ["Python", "Java", "C++", "机器学习", "深度学习", "数据分析", "文案写作", "团队协作"]
+    if any(phrase in fact_text for phrase in [
+        "方向没有偏好", "方向都可以", "不限方向", "方向不限", "什么方向都行",
+    ]):
+        state["competition_type"] = ""
+        state["competition_type_confirmed"] = True
+
+    known_skills = [
+        "Python", "Java", "C++", "PyTorch", "SQL", "MATLAB", "Go", "Linux",
+        "机器学习", "深度学习", "数据分析", "文案写作", "团队协作",
+    ]
     for skill in known_skills:
-        if skill.lower() in fact_text.lower() and skill not in state["skills"]:
+        if skill.lower() not in fact_text.lower():
+            continue
+        if _contains_negated_term(fact_text, skill):
+            state["skill_gaps"] = _append_unique(state.get("skill_gaps", []), skill)
+            state["skills"] = [item for item in state["skills"] if item != skill]
+        elif skill not in state["skills"]:
             state["skills"] = [*state["skills"], skill]
 
     if state.get("intent") in {"recommendation", "full_process"} and any(
         phrase in fact_text
-        for phrase in ["暂时没有技能", "没有特别擅长", "还不清楚擅长", "不知道擅长", "没什么技能"]
+        for phrase in [
+            "暂时没有技能", "没有特别擅长", "还不清楚擅长", "不知道擅长", "没什么技能",
+            "不清楚自己擅长", "暂时不清楚", "还不知道自己会什么",
+        ]
     ):
         state["skills_skipped"] = True
 
-    if len(text) >= 80:
+    goal_aliases = {
+        "保研": "保研", "推免": "保研", "考研": "考研", "留学": "留学",
+        "就业": "就业", "找工作": "就业", "创业": "创业", "兴趣": "兴趣提升",
+    }
+    for keyword, normalized in goal_aliases.items():
+        if keyword in fact_text:
+            state["development_goals"] = _append_unique(state.get("development_goals", []), normalized)
+
+    time_match = re.search(r"每周(?:大概|大约|能|可以|可)?\s*(\d+(?:\.\d+)?)\s*(?:个)?小时", fact_text)
+    if time_match:
+        state["available_time_per_week"] = float(time_match.group(1))
+
+    if any(phrase in fact_text for phrase in ["最好个人赛", "偏好个人赛", "想参加个人赛", "不要组队", "不想组队"]):
+        state["team_preference"] = "个人赛"
+    elif any(phrase in fact_text for phrase in ["团队赛", "组队参加", "想组队", "有团队"]):
+        state["team_preference"] = "团队赛"
+
+    if len(text) >= 80 and _looks_like_notification(text):
         state["notification_text"] = text
 
     if "项目名称" in fact_text or "竞赛名称" in fact_text:
@@ -625,6 +765,70 @@ def _update_chat_state(state: dict[str, Any], message: str) -> dict[str, Any]:
         if keyword in fact_text:
             state["material_type"] = material_type
             break
+    if understanding:
+        state = _apply_turn_understanding(state, understanding)
+    return state
+
+
+def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, Any]) -> dict[str, Any]:
+    """Merge a validated LLM turn interpretation without replacing deterministic safeguards."""
+    allowed_intents = {"collect", "extract", "recommendation", "material", "full_process"}
+    intent = str(understanding.get("intent") or "").strip()
+    if intent in allowed_intents and not state.get("intent"):
+        state["intent"] = intent
+
+    corrected_fields = understanding.get("corrected_fields", [])
+    corrected_fields = corrected_fields if isinstance(corrected_fields, list) else []
+    for key in ["major", "grade", "competition_type", "competition_level", "team_preference"]:
+        value = str(understanding.get(key) or "").strip()
+        if value and (not state.get(key) or key in corrected_fields):
+            state[key] = value
+
+    type_status = str(understanding.get("competition_type_status") or "").strip()
+    if type_status == "no_preference":
+        state["competition_type"] = ""
+        state["competition_type_confirmed"] = True
+    elif state.get("competition_type"):
+        state["competition_type_confirmed"] = True
+
+    level_status = str(understanding.get("competition_level_status") or "").strip()
+    if level_status == "no_preference":
+        state["competition_level"] = ""
+        state["competition_level_confirmed"] = True
+    elif state.get("competition_level"):
+        state["competition_level_confirmed"] = True
+
+    list_merges = {
+        "skills_add": "skills",
+        "skills_remove": "skill_gaps",
+        "excluded_competition_types": "excluded_competition_types",
+        "preferred_levels": "preferred_levels",
+        "acceptable_levels": "acceptable_levels",
+        "excluded_levels": "excluded_levels",
+        "development_goals": "development_goals",
+    }
+    for source_key, state_key in list_merges.items():
+        values = understanding.get(source_key, [])
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            clean_value = str(value or "").strip()
+            if clean_value:
+                state[state_key] = _append_unique(state.get(state_key, []), clean_value)
+
+    for skill in understanding.get("skills_remove", []) if isinstance(understanding.get("skills_remove"), list) else []:
+        state["skills"] = [item for item in state.get("skills", []) if item.lower() != str(skill).lower()]
+
+    if understanding.get("skills_status") == "no_preference":
+        state["skills_skipped"] = True
+
+    time_value = understanding.get("available_time_per_week")
+    if isinstance(time_value, (int, float)) and time_value >= 0:
+        state["available_time_per_week"] = float(time_value)
+
+    acknowledgement = str(understanding.get("acknowledgement") or "").strip()
+    if acknowledgement:
+        state["last_acknowledgement"] = acknowledgement[:180]
     return state
 
 
@@ -645,14 +849,14 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
         if not state.get("grade"):
             return "专业方向了解了。你目前读大几，或者是在研究生阶段？我会据此判断参赛资格。"
     if state["intent"] in {"recommendation", "full_process"}:
-        if not state.get("competition_type") and not state.get("competition_level"):
+        if not state.get("competition_type_confirmed") and not state.get("competition_level_confirmed"):
             return (
                 "接下来想听听你的偏好：你对人工智能、算法、数学建模、创新创业中的哪类更感兴趣？"
                 "对竞赛级别有要求的话，也可以一起告诉我。"
             )
-        if not state.get("competition_type"):
+        if not state.get("competition_type_confirmed"):
             return "竞赛级别我记下了。你更想尝试哪个方向？比如人工智能、算法、数学建模或创新创业。"
-        if not state.get("competition_level"):
+        if not state.get("competition_level_confirmed"):
             return "方向已经清楚了。你更倾向校级、省级、国家级还是国际级？如果没有硬性要求，也可以告诉我。"
         if not state.get("skills") and not state.get("skills_skipped"):
             return (
@@ -688,6 +892,10 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
         "interests": state.get("interests", []),
         "skills": state.get("skills", []),
         "competition_level": state.get("competition_level", ""),
+        "development_goals": state.get("development_goals", []),
+        "available_time_per_week": state.get("available_time_per_week"),
+        "team_preference": state.get("team_preference", ""),
+        "skill_gaps": state.get("skill_gaps", []),
     }
     payload: dict[str, Any] = {}
     task_type = state.get("intent") or "recommendation"
@@ -699,6 +907,12 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
 
     if state.get("competition_type"):
         payload["keywords"] = [state["competition_type"], state.get("competition_level", "")]
+    payload["preferences"] = {
+        "preferred_levels": state.get("preferred_levels", []),
+        "acceptable_levels": state.get("acceptable_levels", []),
+        "excluded_levels": state.get("excluded_levels", []),
+        "excluded_competition_types": state.get("excluded_competition_types", []),
+    }
     if state.get("material_type"):
         payload["material_type"] = state["material_type"]
     if state.get("project_name"):

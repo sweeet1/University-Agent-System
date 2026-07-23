@@ -70,3 +70,32 @@ recommendation:
     grade_score_below: 40
     ability_score_below: 30
     max_level: B
+  # Step 4：多样性 + 赛事层级
+  diversity:
+    enabled: true
+    max_per_category: 1
+  prestige:
+    enabled: true
+    mode: soft_add   # soft_add | tie_break
+    boost:
+      national: 10
+      provincial: 5
+      association: 2
+      city: 0
+      unknown: 0
+  # Step 5：外置词典
+  synonyms_path: ./config/recommendation_synonyms.yaml
+  majors_path: ./config/recommendation_majors.yaml
+  # Step 7：质量门槛（低于 A 标备选；有主推时宁少勿滥）
+  quality_gate:
+    enabled: true
+    min_primary_level: A
+    allow_backup: true
+    prefer_fewer: true
+  # Top-N 文案润色（复用全局 llm；无 API Key 时自动回退规则文案）
+  llm_copywriting:
+    enabled: true
+    polish_risk: true
+    temperature: 0.3
+    max_tokens: 280
+    timeout: 20

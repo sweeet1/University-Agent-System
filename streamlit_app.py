@@ -167,7 +167,7 @@ def load_cloud_secrets() -> None:
     """Expose Streamlit secrets through the environment expected by agents."""
     try:
         api_key = str(st.secrets.get("DEEPSEEK_API_KEY", "")).strip()
-    except FileNotFoundError:
+    except Exception:
         api_key = ""
     if api_key:
         os.environ["DEEPSEEK_API_KEY"] = api_key
@@ -220,10 +220,21 @@ def run_conversation_turn(prompt: str) -> None:
         st.session_state.last_status = followup.get("status", "success")
         return
 
-    state = _update_chat_state(st.session_state.chat_state, prompt)
+    with st.spinner("正在理解你的需求……"):
+        understanding = main_agent.understand_conversation_turn(
+            prompt, st.session_state.chat_state
+        )
+    state = _update_chat_state(
+        st.session_state.chat_state,
+        prompt,
+        understanding=understanding,
+    )
     st.session_state.chat_state = state
     question = _next_chat_question(state)
     if question:
+        acknowledgement = str(state.get("last_acknowledgement", "")).strip()
+        if acknowledgement:
+            question = f"{acknowledgement}\n\n{question}"
         st.session_state.messages.append({"role": "assistant", "content": question})
         st.session_state.last_status = "正在补充信息"
         return

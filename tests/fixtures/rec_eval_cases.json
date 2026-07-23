@@ -1,0 +1,119 @@
+[
+  {
+    "id": "eval_math_over_expired",
+    "input": {
+      "task_id": "eval_001",
+      "user_input": "推荐竞赛",
+      "task_type": "recommendation",
+      "user_profile": {
+        "major": "计算机科学与技术",
+        "enrollment_year": 2024,
+        "education_level": "本科",
+        "skills": ["Python", "数学建模"],
+        "interests": ["数学建模"],
+        "competition_experience": ["全国大学生数学建模 省一等奖"],
+        "awards": [
+          {
+            "competition_name": "全国大学生数学建模",
+            "level": "省级",
+            "award_name": "一等奖"
+          }
+        ],
+        "available_time": "2026年7月-9月",
+        "team_status": "已有团队"
+      },
+      "input_data": {
+        "recommendation_rules": {
+          "top_n": 2,
+          "quality_gate": { "enabled": false },
+          "diversity": { "enabled": true, "max_per_category": 1 }
+        },
+        "structured_items": [
+          {
+            "title": "目标数模全国赛",
+            "deadline": "2026-08-20",
+            "requirements": {
+              "tags": ["数学建模"],
+              "category": "数学建模",
+              "team_requirement": "组队",
+              "target_education": ["本科"],
+              "required_skills": ["数学建模"]
+            },
+            "organizer": "教育部",
+            "summary": "全国大学生数学建模竞赛"
+          },
+          {
+            "title": "过期数模赛",
+            "deadline": "2020-01-01",
+            "requirements": {
+              "tags": ["数学建模"],
+              "category": "数学建模",
+              "team_requirement": "组队",
+              "target_education": ["本科"]
+            }
+          },
+          {
+            "title": "无关英语赛",
+            "deadline": "2026-08-20",
+            "requirements": {
+              "tags": ["英语"],
+              "category": "英语",
+              "team_requirement": "单人",
+              "target_education": ["本科"]
+            }
+          }
+        ]
+      }
+    },
+    "expect_in_top": ["目标数模全国赛"],
+    "expect_not_in_top": ["过期数模赛"]
+  },
+  {
+    "id": "eval_exclude_english_pref",
+    "input": {
+      "task_id": "eval_002",
+      "user_input": "不要英语赛",
+      "task_type": "recommendation",
+      "user_profile": {
+        "major": "计算机科学与技术",
+        "enrollment_year": 2024,
+        "education_level": "本科",
+        "skills": ["Python"],
+        "interests": ["算法竞赛", "英语"],
+        "available_time": "2026年7月-9月",
+        "team_status": "寻找队友"
+      },
+      "input_data": {
+        "recommendation_rules": {
+          "top_n": 3,
+          "prefs": { "exclude_tags": ["英语"] },
+          "quality_gate": { "enabled": false }
+        },
+        "structured_items": [
+          {
+            "title": "算法编程挑战赛",
+            "deadline": "2026-09-01",
+            "requirements": {
+              "tags": ["算法编程"],
+              "category": "计算机",
+              "team_requirement": "组队",
+              "target_education": ["本科"]
+            }
+          },
+          {
+            "title": "全国商务英语大赛",
+            "deadline": "2026-09-01",
+            "requirements": {
+              "tags": ["英语", "商务英语"],
+              "category": "英语",
+              "team_requirement": "单人",
+              "target_education": ["本科"]
+            }
+          }
+        ]
+      }
+    },
+    "expect_in_top": ["算法编程挑战赛"],
+    "expect_not_in_top": ["英语"]
+  }
+]
