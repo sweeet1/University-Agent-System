@@ -861,7 +861,7 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
         if not state.get("skills") and not state.get("skills_skipped"):
             return (
                 "为了把结果排得更贴合，你目前有哪些比较熟悉的技能？"
-                "比如 Python、C++、算法、机器学习或团队协作。暂时没有特别擅长的也没关系，直接告诉我即可。"
+                "比如 Python、C++、机器学习或团队协作。暂时没有特别擅长的也没关系，直接告诉我即可。"
             )
     if state["intent"] in {"material", "full_process"}:
         has_previous = bool(state.get("last_result"))

@@ -1,6 +1,8 @@
 """基于 Supabase 的竞赛数据存储，支持全文搜索。"""
 
 import logging
+import os
+import re
 import threading
 from datetime import datetime
 from typing import Optional
@@ -17,6 +19,60 @@ FIELDS = [
     "category", "level", "attachments", "raw_text",
 ]
 
+_COMPETITIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS competitions (
+    id            BIGSERIAL PRIMARY KEY,
+    title         TEXT NOT NULL DEFAULT '',
+    url           TEXT NOT NULL DEFAULT '',
+    source        TEXT NOT NULL DEFAULT '',
+    publish_date  TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    organizer     TEXT NOT NULL DEFAULT '',
+    organizer_list JSONB NOT NULL DEFAULT '[]'::jsonb,
+    co_organizers  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    supporters     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    regist_start  TEXT NOT NULL DEFAULT '',
+    regist_end    TEXT NOT NULL DEFAULT '',
+    contest_start TEXT NOT NULL DEFAULT '',
+    contest_end   TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL DEFAULT '',
+    level         TEXT NOT NULL DEFAULT '',
+    attachments   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    raw_text      TEXT NOT NULL DEFAULT '',
+    collected_at  TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL DEFAULT '',
+    UNIQUE (url, source)
+);"""
+
+_CRAWL_LOGS_DDL = """\
+CREATE TABLE IF NOT EXISTS crawl_logs (
+    id            BIGSERIAL PRIMARY KEY,
+    task_id       TEXT NOT NULL DEFAULT '',
+    source        TEXT NOT NULL DEFAULT '',
+    pages_crawled INTEGER NOT NULL DEFAULT 0,
+    items_found   INTEGER NOT NULL DEFAULT 0,
+    items_new     INTEGER NOT NULL DEFAULT 0,
+    items_updated INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'running',
+    error_message TEXT,
+    started_at    TEXT NOT NULL DEFAULT '',
+    finished_at   TEXT
+);"""
+
+
+def _extract_project_ref(supabase_url: str) -> str | None:
+    """Extract the Supabase project reference from a dashboard URL."""
+    m = re.search(r"https?://([^.]+)\.supabase\.co", supabase_url)
+    return m.group(1) if m else None
+
+
+def _build_pg_dsn(supabase_url: str, password: str) -> str:
+    """Build a direct PostgreSQL connection DSN (bypasses PgBouncer for DDL)."""
+    ref = _extract_project_ref(supabase_url)
+    if not ref:
+        raise ValueError(f"Cannot extract project ref from SUPABASE_URL: {supabase_url}")
+    return f"postgresql://postgres.{ref}:{password}@db.{ref}.supabase.co:5432/postgres"
+
 
 class SupabaseStore:
     """基于 Supabase PostgreSQL 的存储后端。
@@ -29,6 +85,46 @@ class SupabaseStore:
     def __init__(self, url: str, key: str):
         self.client: Client = create_client(url, key)
         self._lock = threading.Lock()
+        self._ensure_tables(url)
+
+    def _ensure_tables(self, supabase_url: str):
+        """Auto-create required tables on first run via direct PostgreSQL connection.
+
+        If SUPABASE_DB_PASSWORD is set in .env, tables are created automatically
+        via a direct connection to the underlying PostgreSQL database (bypassing
+        PgBouncer so DDL is supported).  Otherwise a clear message with the DDL
+        is logged so the user can run it manually.
+        """
+        try:
+            self.client.table("competitions").select("id", count="exact").limit(1).execute()
+            return  # tables already exist
+        except Exception:
+            pass  # tables missing — try to create them
+
+        password = os.getenv("SUPABASE_DB_PASSWORD", "").strip()
+        if not password or password == "your_database_password_here":
+            logger.warning(
+                "competitions 表不存在。设置 SUPABASE_DB_PASSWORD 可自动建表，"
+                "或手动在 Supabase SQL Editor 中执行：\n%s\n%s",
+                _COMPETITIONS_DDL, _CRAWL_LOGS_DDL,
+            )
+            return
+
+        try:
+            import psycopg2
+            dsn = _build_pg_dsn(supabase_url, password)
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(_COMPETITIONS_DDL)
+                cur.execute(_CRAWL_LOGS_DDL)
+            conn.close()
+            logger.info("Supabase 表已自动创建：competitions, crawl_logs")
+        except Exception as exc:
+            logger.warning(
+                "自动建表失败 (%s)。请在 Supabase SQL Editor 中执行：\n%s\n%s",
+                exc, _COMPETITIONS_DDL, _CRAWL_LOGS_DDL,
+            )
 
     # ---- 竞赛数据 CRUD ----
 
@@ -155,8 +251,6 @@ class SupabaseStore:
         **filters,
     ) -> list[dict]:
         """多字段模糊搜索（title + description + organizer）。"""
-        # 由于 Supabase SDK 的 or_ 语法限制，fallback 到只有 title
-        # 未来可用 .or_("title.ilike.%query%,description.ilike.%query%")
         q = (
             self.client.table("competitions")
             .select("*")
