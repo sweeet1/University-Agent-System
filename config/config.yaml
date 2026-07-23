@@ -8,6 +8,8 @@
   timeout: 30
 
 info_collect:
+  max_results: 10             # 每次采集目标数量
+  cache_max_age_hours: 6      # 数据库数据有效期（小时），超过后强制重新爬取
   request_delay_min: 1
   request_delay_max: 3
   max_pages: 10

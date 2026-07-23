@@ -8,7 +8,7 @@
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -80,6 +80,37 @@ class InfoCollectAgent:
             }
             for it in all_items
         ]
+
+    @staticmethod
+    def _newest_age_hours(items: list[dict]) -> float:
+        """Return hours since the newest ``collected_at`` in *items*.
+
+        Returns ``float('inf')`` when no valid timestamp is found so that
+        callers treat the data as stale.
+        """
+        if not items:
+            return float("inf")
+        newest: datetime | None = None
+        for item in items:
+            raw = str(item.get("collected_at", "")).strip()
+            if not raw:
+                continue
+            try:
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                elif "+" not in raw and raw.count("-") > 2:
+                    # ISO with time but no timezone offset — treat as UTC
+                    raw += "+00:00"
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if newest is None or dt > newest:
+                    newest = dt
+            except (ValueError, TypeError):
+                continue
+        if newest is None:
+            return float("inf")
+        return (datetime.now(timezone.utc) - newest).total_seconds() / 3600
 
     def _search_storage(
         self, storage: Storage, keywords: list[str], limit: int
@@ -179,7 +210,8 @@ class InfoCollectAgent:
             keywords = inner.get("keywords", [])
             if not keywords:
                 raise ValueError("网页采集需要提供 keywords 参数，例如 ['数学建模']")
-            max_results = inner.get("max_results", 10)
+            info_cfg = self.config.get("info_collect", {}) if isinstance(self.config, dict) else {}
+            max_results = inner.get("max_results", info_cfg.get("max_results", 10))
             if not isinstance(max_results, int) or max_results < 1 or max_results > 100:
                 raise ValueError("max_results 必须在 1-100 之间")
 
@@ -203,16 +235,24 @@ class InfoCollectAgent:
 
         web_sources = set(SourceRegistry.list_all())
 
-        # 网页采集：先查存储，不够再爬
+        # 网页采集：先查数据库，判断新鲜度
         web_srcs = [s for s in sources if s in web_sources]
         if web_srcs:
             keywords = inner.get("keywords", [])
-            max_results = inner.get("max_results", 10)
+            info_cfg = self.config.get("info_collect", {}) if isinstance(self.config, dict) else {}
+            max_results = inner.get("max_results") or info_cfg.get("max_results", 10)
+            cache_max_age_hours = info_cfg.get("cache_max_age_hours", 6)
 
-            # 1. 先从本地/云端存储搜索已有数据
+            # 1. 先从数据库搜索已有数据
             cached = self._search_storage(storage, keywords, max_results)
             cache_hits = len(cached)
-            if cache_hits >= max_results:
+            cache_fresh = (
+                cache_hits > 0
+                and self._newest_age_hours(cached) <= cache_max_age_hours
+            )
+
+            if cache_hits >= max_results and cache_fresh:
+                # 数据库数据新鲜且够量 → 跳过爬虫
                 all_items.extend(cached[:max_results])
                 all_stats["web"] = {
                     "pages_crawled": 0, "items_found": cache_hits,
@@ -220,8 +260,10 @@ class InfoCollectAgent:
                     "cache_hits": cache_hits, "source": "storage",
                 }
             else:
+                # 数据库数据不够 或 已过期 → 爬虫补爬
                 all_items.extend(cached)
-                remaining = max_results - cache_hits
+                stale = cache_hits > 0 and not cache_fresh
+                remaining = max_results if stale else max(0, max_results - cache_hits)
                 cached_urls = {it.get("url") for it in cached}
 
                 crawler = self._get_crawler()
