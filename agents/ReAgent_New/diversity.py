@@ -315,3 +315,41 @@ def select_diverse_top_n(
                 break
 
     return selected
+
+
+def force_fill_recommendations(
+    recommendations: List[dict],
+    scored: List[dict],
+    top_n: int,
+    build_rec,
+) -> List[dict]:
+    """最终强制凑满 top_n：在多样性/质量门槛之后执行，优先级最高。
+
+    - 已有条目保持原顺序与 is_backup 标记
+    - 不足时按 scored（已降序）补入尚未出现的竞赛，一律标 is_backup=True
+    - 候选不足 top_n 时有多少返回多少
+    """
+    top_n = max(1, int(top_n))
+    if len(recommendations) >= top_n:
+        return recommendations[:top_n]
+
+    filled = list(recommendations)
+    seen = {
+        str(r.get("title") or "").strip()
+        for r in filled
+        if str(r.get("title") or "").strip()
+    }
+
+    for entry in scored:
+        if len(filled) >= top_n:
+            break
+        item = entry.get("item") or {}
+        title = str(item.get("title") or "").strip()
+        if not title or title in seen:
+            continue
+        rec = build_rec(entry)
+        rec["is_backup"] = True
+        filled.append(rec)
+        seen.add(title)
+
+    return filled[:top_n]

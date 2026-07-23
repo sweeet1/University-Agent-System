@@ -17,6 +17,7 @@ from .constants import (
 from .diversity import load_diversity_settings, load_prestige_settings
 from .constraints import load_quality_gate
 from .llm_copy import load_llm_copy_settings
+from .semantic_rerank import load_semantic_rerank_settings
 from .synonyms import load_lexicon
 
 
@@ -112,6 +113,7 @@ def load_recommendation_settings(config: Optional[dict] = None) -> dict:
         "prestige": load_prestige_settings(rec_cfg),
         "quality_gate": load_quality_gate(rec_cfg),
         "llm_copywriting": load_llm_copy_settings(rec_cfg),
+        "semantic_rerank": load_semantic_rerank_settings(rec_cfg),
         "lexicon": load_lexicon(rec_cfg),
         "rec_cfg": rec_cfg,
     }

@@ -23,6 +23,7 @@ from .copywriting import (
 )
 from .diversity import (
     annotate_prestige_and_category,
+    force_fill_recommendations,
     infer_prestige,
     select_diverse_top_n,
     sort_scored,
@@ -30,6 +31,7 @@ from .diversity import (
 from .llm_copy import polish_recommendations
 from .responses import error_response, partial_response, success_response
 from .scoring import score_all_dimensions
+from .semantic_rerank import apply_semantic_rerank
 from .synonyms import user_ability_corpus
 from .utils import load_config
 from .validate import validate_input as validate_input_payload
@@ -66,12 +68,30 @@ class RecommendationAgent:
         self.prestige_settings = settings["prestige"]
         self.quality_gate = settings["quality_gate"]
         self.llm_copywriting = settings["llm_copywriting"]
+        self.semantic_rerank = settings["semantic_rerank"]
         self.rec_cfg = settings["rec_cfg"]
 
         lexicon = settings["lexicon"]
         self.synonym_groups = lexicon["synonym_groups"]
         self.major_groups = lexicon["major_groups"]
         self.skill_normalize = lexicon["skill_normalize"]
+
+    @staticmethod
+    def _resolve_top_n(rules: dict, rec_cfg: Optional[dict] = None) -> int:
+        """解析返回条数：rules.top_n > config.top_n > 默认 3。"""
+        candidates = []
+        if isinstance(rules, dict) and rules.get("top_n") is not None:
+            candidates.append(rules.get("top_n"))
+        cfg = rec_cfg if isinstance(rec_cfg, dict) else {}
+        if cfg.get("top_n") is not None:
+            candidates.append(cfg.get("top_n"))
+        candidates.append(3)
+        for raw in candidates:
+            try:
+                return max(1, int(raw))
+            except (TypeError, ValueError):
+                continue
+        return 3
 
     # ------------------------------------------------------------------
     # 统一外部接口
@@ -117,10 +137,7 @@ class RecommendationAgent:
         rules = business.get("recommendation_rules", {})
         if not isinstance(rules, dict):
             rules = {}
-        try:
-            top_n = max(1, int(rules.get("top_n", 3)))
-        except (TypeError, ValueError):
-            top_n = 3
+        top_n = self._resolve_top_n(rules, self.rec_cfg)
 
         weights = resolve_weights(self.weights, rules)
         caps = {
@@ -153,6 +170,10 @@ class RecommendationAgent:
         llm_copy_settings = dict(self.llm_copywriting)
         if isinstance(rules.get("llm_copywriting"), dict):
             llm_copy_settings.update(rules["llm_copywriting"])
+
+        semantic_settings = dict(self.semantic_rerank)
+        if isinstance(rules.get("semantic_rerank"), dict):
+            semantic_settings.update(rules["semantic_rerank"])
 
         scored = []
         filtered_out = []
@@ -218,6 +239,17 @@ class RecommendationAgent:
 
         scored = annotate_prestige_and_category(scored, prestige_settings)
         scored = sort_scored(scored, prestige_settings)
+        # DeepSeek 精排兴趣/能力（失败自动回退关键词分）
+        scored, semantic_meta = apply_semantic_rerank(
+            scored,
+            user_profile,
+            weights,
+            config=self.config,
+            settings=semantic_settings,
+        )
+        if semantic_meta.get("used"):
+            scored = annotate_prestige_and_category(scored, prestige_settings)
+            scored = sort_scored(scored, prestige_settings)
         selected = select_diverse_top_n(scored, top_n, diversity_settings)
 
         recommendations = []
@@ -257,7 +289,7 @@ class RecommendationAgent:
             })
 
         recommendations = apply_quality_gate(recommendations, quality_gate)
-        # 质量门槛去掉备选后，再按分类去重，避免第三轮补齐带来的同质项
+        # 质量门槛去掉备选后，再按分类去重（可少于 top_n）
         max_per = 1
         try:
             max_per = max(1, int(diversity_settings.get("max_per_category", 1)))
@@ -278,7 +310,54 @@ class RecommendationAgent:
         else:
             recommendations = recommendations[:top_n]
 
-        recommendations = recommendations[:top_n]
+        # 最高优先级：最终强制凑满 top_n（可含备选 / 同类）
+        force_top_n = True
+        if isinstance(rules.get("force_top_n"), bool):
+            force_top_n = rules["force_top_n"]
+        elif isinstance(self.rec_cfg.get("force_top_n"), bool):
+            force_top_n = self.rec_cfg["force_top_n"]
+
+        def _build_rec(entry: dict) -> dict:
+            item = entry["item"]
+            total = entry["total"]
+            detail = entry["scores"]
+            matched = entry.get("matched_signals") or []
+            unmatched = entry.get("unmatched_signals") or []
+            level_code, _ = to_level(total, self.level_thresholds)
+            level_code = apply_level_cap(level_code, detail, caps)
+            return {
+                "title": item.get("title", "未知项目"),
+                "match_score": total,
+                "recommend_level": level_code,
+                "reason": build_reason(
+                    detail,
+                    user=user_profile,
+                    item=item,
+                    matched_signals=matched,
+                    unmatched_signals=unmatched,
+                ),
+                "risk": build_risk(detail, unmatched_signals=unmatched),
+                "suggested_action": build_action(level_code, detail, is_backup=True),
+                "detail": detail,
+                "matched_signals": matched,
+                "unmatched_signals": unmatched,
+                "category_key": entry.get("category_key", ""),
+                "prestige_tier": entry.get("prestige_tier", "unknown"),
+                "is_backup": True,
+                "source_url": item.get("source_url", ""),
+                "summary": item.get("summary", ""),
+                "deadline": item.get("deadline", ""),
+                "organizer": item.get("organizer", ""),
+                "type": item.get("type", ""),
+            }
+
+        if force_top_n:
+            recommendations = force_fill_recommendations(
+                recommendations, scored, top_n, _build_rec
+            )
+        else:
+            recommendations = recommendations[:top_n]
+
         for idx, rec in enumerate(recommendations, 1):
             rec["rank"] = idx
             rec["id"] = f"rec_{idx}"
@@ -309,6 +388,8 @@ class RecommendationAgent:
             f"硬性不符合 {hard_filtered} 个，"
             f"有效匹配 {len(scored)} 个，返回 Top-{len(recommendations)}。"
         )
+        if semantic_meta.get("used"):
+            message += "（兴趣/能力已由 DeepSeek 精排）"
         if llm_used:
             message += "（推荐理由已由大模型润色）"
 
@@ -323,5 +404,11 @@ class RecommendationAgent:
         resp["metadata"] = {
             "copy_source": "llm" if llm_used else "rule",
             "llm_copywriting_enabled": bool(llm_copy_settings.get("enabled", True)),
+            "semantic_rerank_used": bool(semantic_meta.get("used")),
+            "semantic_rerank": {
+                "pool_size": semantic_meta.get("pool_size"),
+                "blend": semantic_meta.get("blend"),
+                "error": semantic_meta.get("error"),
+            },
         }
         return resp

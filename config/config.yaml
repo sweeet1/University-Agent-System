@@ -56,6 +56,7 @@ agent:
 recommendation:
   hard_constraints: true
   hard_major_min_score: 50
+  top_n: 3                 # MainAgent / rules 未传 top_n 时的默认条数
   weights:
     interest_score: 0.30
     ability_score: 0.25
@@ -94,6 +95,16 @@ recommendation:
     min_primary_level: A
     allow_backup: true
     prefer_fewer: true
+  # 最终强制凑满 top_n（默认 3）：在多样性 / 砍 BC 之后执行，优先级最高
+  force_top_n: true
+  # DeepSeek Chat 精排兴趣/能力（无 Key 或失败时回退关键词分）
+  semantic_rerank:
+    enabled: true
+    blend: 0.7          # 语义分权重；关键词为 1-blend
+    pool_size: 8        # 按关键词初分取前 N 条精排
+    temperature: 0.1
+    max_tokens: 900
+    timeout: 45
   # Top-N 文案润色（复用全局 llm；无 API Key 时自动回退规则文案）
   llm_copywriting:
     enabled: true
