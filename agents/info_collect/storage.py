@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import threading
 from datetime import datetime
 from typing import Optional
@@ -92,6 +93,27 @@ class Storage:
                     log.update(kwargs)
                     break
             self._write_json(self.logs_file, logs)
+
+    def search(self, keywords: list[str], limit: int = 20) -> list[dict]:
+        """Search stored competitions by keywords, matching title/description/organizer.
+
+        Returns items sorted by collected_at descending, up to *limit*.
+        """
+        if not keywords:
+            return []
+        items = self._read_json(self.items_file)
+        matched = []
+        kw_lower = [k.lower() for k in keywords]
+        for item in items:
+            text = " ".join([
+                str(item.get("title", "")),
+                str(item.get("description", "")),
+                str(item.get("organizer", "")),
+            ]).lower()
+            if any(kw in text for kw in kw_lower):
+                matched.append(item)
+        matched.sort(key=lambda x: x.get("collected_at", ""), reverse=True)
+        return matched[:limit]
 
     def get_all_items(self, source: Optional[str] = None) -> list[dict]:
         items = self._read_json(self.items_file)

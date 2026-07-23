@@ -52,6 +52,46 @@ class InfoCollectAgent:
             self._crawler = Crawler(self.config, self._get_storage())
         return self._crawler
 
+    @staticmethod
+    def _build_raw_items(all_items: list[dict]) -> list[dict]:
+        """Build standard-format raw_items from collected competition dicts."""
+        return [
+            {
+                "title": it.get("title", ""),
+                "url": it.get("url", ""),
+                "source": it.get("source", ""),
+                "raw_text": it.get("raw_text", ""),
+                "publish_date": it.get("publish_date", ""),
+                "collected_at": it.get("collected_at", ""),
+                "description": it.get("description", ""),
+                "organizer": it.get("organizer", ""),
+                "organizer_list": it.get("organizer_list", []),
+                "co_organizers": it.get("co_organizers", []),
+                "supporters": it.get("supporters", []),
+                "regist_start": it.get("regist_start", ""),
+                "regist_end": it.get("regist_end", ""),
+                "contest_start": it.get("contest_start", ""),
+                "contest_end": it.get("contest_end", ""),
+                "category": it.get("category", ""),
+                "level": it.get("level", ""),
+                "attachments": it.get("attachments", []),
+                "file_type": it.get("file_type", ""),
+                "file_name": it.get("file_name", ""),
+            }
+            for it in all_items
+        ]
+
+    def _search_storage(
+        self, storage: Storage, keywords: list[str], limit: int
+    ) -> list[dict]:
+        """Query stored competition data with keyword expansion."""
+        from .info_collect.crawler import Crawler
+
+        expanded = Crawler._expand_keywords(keywords) if keywords else []
+        if hasattr(storage, "search_by_keywords"):
+            return storage.search_by_keywords(expanded, limit=limit)  # type: ignore[union-attr]
+        return storage.search(expanded, limit=limit)
+
     # ---- 统一接口 ----
 
     def run(self, input_data: dict) -> dict:
@@ -163,28 +203,50 @@ class InfoCollectAgent:
 
         web_sources = set(SourceRegistry.list_all())
 
-        # 网页采集
+        # 网页采集：先查存储，不够再爬
         web_srcs = [s for s in sources if s in web_sources]
         if web_srcs:
             keywords = inner.get("keywords", [])
             max_results = inner.get("max_results", 10)
-            crawler = self._get_crawler()
-            log_id = storage.start_crawl_log(task_id, ",".join(web_srcs))
-            try:
-                items, wstats = crawler.crawl(keywords, web_srcs, max_results, log_id)
-                all_items.extend(items)
+
+            # 1. 先从本地/云端存储搜索已有数据
+            cached = self._search_storage(storage, keywords, max_results)
+            cache_hits = len(cached)
+            if cache_hits >= max_results:
+                all_items.extend(cached[:max_results])
+                all_stats["web"] = {
+                    "pages_crawled": 0, "items_found": cache_hits,
+                    "items_new": 0, "items_updated": 0,
+                    "cache_hits": cache_hits, "source": "storage",
+                }
+            else:
+                all_items.extend(cached)
+                remaining = max_results - cache_hits
+                cached_urls = {it.get("url") for it in cached}
+
+                crawler = self._get_crawler()
+                log_id = storage.start_crawl_log(task_id, ",".join(web_srcs))
+                try:
+                    web_items, wstats = crawler.crawl(keywords, web_srcs, remaining, log_id)
+                finally:
+                    try:
+                        crawler.close()
+                    except Exception:
+                        pass
+                storage.update_crawl_log(
+                    log_id,
+                    pages_crawled=wstats.get("pages_crawled", 0),
+                    items_found=wstats.get("items_found", 0),
+                    items_new=wstats.get("items_new", 0),
+                    items_updated=wstats.get("items_updated", 0),
+                    status="completed",
+                    finished_at=datetime.now().isoformat(),
+                )
+
+                new_items = [it for it in web_items if it.get("url") not in cached_urls]
+                all_items.extend(new_items)
+                wstats["cache_hits"] = cache_hits
                 all_stats["web"] = wstats
-            finally:
-                crawler.close()
-            storage.update_crawl_log(
-                log_id,
-                pages_crawled=wstats.get("pages_crawled", 0),
-                items_found=wstats.get("items_found", 0),
-                items_new=wstats.get("items_new", 0),
-                items_updated=wstats.get("items_updated", 0),
-                status="completed",
-                finished_at=datetime.now().isoformat(),
-            )
 
         # 本地文件解析
         if "local_file" in sources:
@@ -220,39 +282,21 @@ class InfoCollectAgent:
             all_stats["local_file"] = fstats
 
         # 组装 raw_items（按规范 12.1 格式）
-        collected = [
-            {
-                "title": it.get("title", ""),
-                "url": it.get("url", ""),
-                "source": it.get("source", ""),
-                "raw_text": it.get("raw_text", ""),
-                "publish_date": it.get("publish_date", ""),
-                "collected_at": it.get("collected_at", ""),
-                "description": it.get("description", ""),
-                "organizer": it.get("organizer", ""),
-                "organizer_list": it.get("organizer_list", []),
-                "co_organizers": it.get("co_organizers", []),
-                "supporters": it.get("supporters", []),
-                "regist_start": it.get("regist_start", ""),
-                "regist_end": it.get("regist_end", ""),
-                "contest_start": it.get("contest_start", ""),
-                "contest_end": it.get("contest_end", ""),
-                "category": it.get("category", ""),
-                "level": it.get("level", ""),
-                "attachments": it.get("attachments", []),
-                "file_type": it.get("file_type", ""),
-                "file_name": it.get("file_name", ""),
-            }
-            for it in all_items
-        ]
+        collected = self._build_raw_items(all_items)
 
         data = {"raw_items": collected, "stats": all_stats}
 
         msg_parts = []
         if "web" in all_stats:
             ws = all_stats["web"]
+            cache_str = (
+                f"缓存命中 {ws.get('cache_hits', 0)} 条, "
+                if ws.get("cache_hits")
+                else ""
+            )
             msg_parts.append(
-                f"网页采集: 爬取 {ws.get('pages_crawled', 0)} 页, "
+                f"网页采集: {cache_str}"
+                f"爬取 {ws.get('pages_crawled', 0)} 页, "
                 f"匹配 {ws.get('items_found', 0)} 条, "
                 f"新增 {ws.get('items_new', 0)} 条"
             )

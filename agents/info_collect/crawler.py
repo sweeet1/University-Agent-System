@@ -24,19 +24,53 @@ class Crawler:
         self.source_configs = cfg.get("sources", {})
         self.storage = storage
         self.dedup = DedupManager(storage)
+        self._closed = False
+
+    def close(self):
+        """Release any resources held by the crawler."""
+        self._closed = True
 
     def _random_delay(self):
         time.sleep(random.uniform(self.delay_min, self.delay_max))
 
-    @staticmethod
-    def _match(item: dict, keywords: list[str]) -> bool:
-        """检查竞赛标题是否包含任一关键词（不区分大小写）。
+    # 关键词 → 标题中可能出现的等价表述
+    _KEYWORD_ALIASES: dict[str, list[str]] = {
+        "人工智能": ["ai", "agent", "llm", "机器学习", "深度学习", "计算机视觉", "nlp", "自然语言处理"],
+        "数据分析": ["数据挖掘", "大数据", "data"],
+        "软件开发": ["编程", "coding", "hackathon", "黑客松", "程序设计", "hack"],
+        "创新创业": ["创业", "创新", "startup", "商业"],
+        "算法": ["算法赛", "algorithm", "程序", "acm"],
+        "数学建模": ["数学", "建模", "math"],
+        "机器人": ["robot", "ros", "无人", "自动化"],
+        "电子设计": ["电子", "硬件", "嵌入式", "iot", "物联网", "stm32"],
+        "自动化": ["控制", "pid", "plc"],
+        "市场营销": ["营销", "商业策划", "策划"],
+        "网络安全": ["安全", "ctf", "攻防", "security"],
+    }
+
+    @classmethod
+    def _expand_keywords(cls, keywords: list[str]) -> list[str]:
+        """Expand user keywords with known aliases for broader matching."""
+        expanded = list(keywords)
+        for kw in keywords:
+            lower_kw = kw.lower()
+            for base, aliases in cls._KEYWORD_ALIASES.items():
+                if lower_kw == base.lower() or lower_kw in [a.lower() for a in aliases]:
+                    expanded.extend(aliases)
+                    if base.lower() not in [e.lower() for e in expanded]:
+                        expanded.append(base)
+        return expanded
+
+    @classmethod
+    def _match(cls, item: dict, keywords: list[str]) -> bool:
+        """检查竞赛标题是否包含任一关键词（不区分大小写），含别名扩展。
         当 keywords 为空或包含 '*' 时，匹配所有条目。
         """
         if not keywords or "*" in keywords:
             return True
         title = (item.get("contest_name") or item.get("title") or "").lower()
-        return any(kw.lower() in title for kw in keywords)
+        expanded = cls._expand_keywords(keywords)
+        return any(kw.lower() in title for kw in expanded)
 
     def crawl(
         self,
@@ -69,6 +103,8 @@ class Crawler:
             timeout = sc.get("timeout", self.client_timeout)
             max_pages = sc.get("max_pages", self.max_pages)
             client = spec.client_class(timeout=timeout)
+            if hasattr(client, "set_search_keywords"):
+                client.set_search_keywords(keywords)
             parser = spec.parser_class({})
 
             try:

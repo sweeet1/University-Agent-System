@@ -26,6 +26,14 @@ TIANCHI_HEADERS = {
 
 class TianchiClient(BaseSourceClient):
 
+    def __init__(self, timeout: int = 30):
+        super().__init__(timeout)
+        self._search_keywords: list[str] = []
+
+    def set_search_keywords(self, keywords: list[str]):
+        """Receive keywords from the crawler for server-side search."""
+        self._search_keywords = list(keywords) if keywords else []
+
     def _default_headers(self) -> dict:
         return TIANCHI_HEADERS
 
@@ -34,9 +42,10 @@ class TianchiClient(BaseSourceClient):
 
         GET /v3/proxy/competition/api/race/page
         """
+        race_name = " ".join(self._search_keywords) if self._search_keywords else ""
         resp = self.get_with_retry(API_URL, params={
             "visualTab": "",
-            "raceName": "",
+            "raceName": race_name,
             "pageNum": page,
             "pageSize": limit,
             "isAll": "true",

@@ -170,6 +170,30 @@ class SupabaseStore:
         result = q.execute()
         return result.data if result.data else []
 
+    def search_by_keywords(self, keywords: list[str], limit: int = 20) -> list[dict]:
+        """Search competitions by multiple keywords across title + description."""
+        if not keywords:
+            return []
+        or_parts = []
+        for kw in keywords:
+            escaped = kw.replace("%", r"\%").replace("_", r"\_")
+            or_parts.append(f"title.ilike.%{escaped}%")
+            or_parts.append(f"description.ilike.%{escaped}%")
+        or_filter = ",".join(or_parts)
+        try:
+            q = (
+                self.client.table("competitions")
+                .select("*")
+                .or_(or_filter)
+                .order("collected_at", desc=True)
+                .limit(limit)
+            )
+            result = q.execute()
+            return result.data if result.data else []
+        except Exception:
+            logger.warning("Supabase search_by_keywords failed, falling back.", exc_info=True)
+            return []
+
     # ---- 实用方法 ----
 
     def get_categories(self) -> list[str]:
