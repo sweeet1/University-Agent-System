@@ -406,13 +406,26 @@ class MaterialAgent:
         style = inner.get("style", self.default_style)
         output_format = input_data.get("required_output", "markdown")
 
+        # ---- Step 0: 诊断信息 ----
+        diag = {
+            "api_key_loaded": bool(self.api_key),
+            "api_base_url": self.api_base_url,
+            "model_name": self.model_name,
+            "model_provider": self.model_provider,
+            "templates_loaded": len(self.prompt_templates),
+        }
+
         # ---- Step 1: 提取数据 ----
         project_info = inner.get("project_info", {})
         user_profile = inner.get("user_profile", {})
         competition_info = inner.get("competition_info", {})
         requirements = inner.get("requirements", {})
+        diag["project_name"] = project_info.get("project_name", "")
+        diag["material_type_raw"] = inner.get("material_type", "")
+        diag["has_competition_info"] = bool(competition_info)
 
         # ---- Step 2: 推断或验证 material_type ----
+        diag["material_type_before_infer"] = material_type
         if not material_type:
             user_input = input_data.get("user_input", "")
             inference = self._infer_material_type(competition_info, user_input)
@@ -431,11 +444,15 @@ class MaterialAgent:
 
             # 推断成功，记录来源
             inference_note = f"（自动推断：{inference['message']}）"
+            diag["inference_used"] = True
+            diag["inference_result"] = material_type
         else:
             inference_note = ""
+            diag["inference_used"] = False
 
         # ---- Step 3: 预检关键字段，缺太多则追问 ----
         missing_check = self._check_missing_fields(project_info, material_type, user_profile)
+        diag["missing_check_triggered"] = missing_check["need_input"]
         if missing_check["need_input"]:
             return {
                 "_status": "need_input",
@@ -483,6 +500,7 @@ class MaterialAgent:
                 or "竞赛申报材料"
             ),
             "inference_note": inference_note,
+            "_diagnostics": diag,
             "content": parsed_content,
             "format_spec": prompt_template.get("format_spec", {}),
             "checklist": prompt_template.get("checklist", []),
@@ -878,6 +896,17 @@ class MaterialAgent:
             LLM 生成的文本内容
         """
         # ---- 真实 API 调用 ----
+        if not self.api_key or not self.api_base_url:
+            has_key = "YES" if self.api_key else "NO - set DEEPSEEK_API_KEY"
+            has_url = self.api_base_url or "NOT SET"
+            has_model = self.model_name or "NOT SET"
+            return (
+                f"# [Config Error] Cannot generate material\n\n"
+                f"> API Key: {has_key}\n"
+                f"> Base URL: {has_url}\n"
+                f"> Model: {has_model}\n\n"
+                f"Please check config.yaml or DEEPSEEK_API_KEY env var."
+            )
         if self.api_key and self.api_base_url:
             try:
                 client = OpenAI(
@@ -904,8 +933,17 @@ class MaterialAgent:
                 return content
 
             except Exception as e:
-                print(f"    [LLM] API 调用失败: {e}，回退到 mock 模式")
-                # 回退到 mock
+                import traceback
+                has_key = "YES" if self.api_key else "NO"
+                return (
+                    f"# [API Error] Material generation failed\n\n"
+                    f"> API Key: {has_key}\n"
+                    f"> Base URL: {self.api_base_url}\n"
+                    f"> Model: {self.model_name}\n"
+                    f"> Error: {type(e).__name__}: {e}\n"
+                    f"> Traceback: {traceback.format_exc()[-300:]}\n\n"
+                    f"Please check network and API configuration."
+                )
 
         # ---- Mock 模式（API 未配置或调用失败时）----
         if output_sections is None:

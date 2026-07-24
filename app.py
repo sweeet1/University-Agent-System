@@ -457,6 +457,7 @@ def new_chat_state() -> dict[str, Any]:
         "skill_gaps": [],
         "competition_type": "",
         "competition_type_confirmed": False,
+        "competition_scope": "",
         "excluded_competition_types": [],
         "competition_level": "",
         "competition_level_confirmed": False,
@@ -467,6 +468,11 @@ def new_chat_state() -> dict[str, Any]:
         "available_time_per_week": None,
         "team_preference": "",
         "last_acknowledgement": "",
+        "input_role": "",
+        "dialogue_action": "",
+        "response_mode": "",
+        "recommendation_options": {},
+        "conversation_summary": "",
         "notification_text": "",
         "project_name": "",
         "material_type": "",
@@ -599,15 +605,49 @@ def _looks_like_notification(text: str) -> bool:
     return any(re.search(indicator, text) for indicator in notification_indicators)
 
 
+def _looks_like_complete_notification(text: str) -> bool:
+    """Require enough notice structure to distinguish pasted input from a short request."""
+    if not _looks_like_notification(text):
+        return False
+    structural_markers = [
+        "主办单位", "主办方", "参赛对象", "参赛资格", "申报材料",
+        "报名方式", "报名截止", "作品要求", "奖项设置",
+    ]
+    marker_count = sum(marker in text for marker in structural_markers)
+    has_date = bool(
+        re.search(
+            r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}",
+            text,
+        )
+    )
+    return len(text) >= 80 or (
+        len(text) >= 50 and marker_count >= 2 and has_date
+    )
+
+
 def _update_chat_state(
     state: dict[str, Any],
     message: str,
     understanding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state = {**new_chat_state(), **(state or {})}
+    previous_major = str(state.get("major") or "").strip()
+    previous_intent = str(state.get("intent") or "").strip()
     text = clean_text(message)
+    is_notification = _looks_like_complete_notification(text)
+    protected_profile = {
+        key: state.get(key)
+        for key in [
+            "major", "grade", "interests", "skills", "skills_skipped", "skill_gaps",
+            "competition_type", "competition_type_confirmed", "competition_scope",
+            "excluded_competition_types", "competition_level",
+            "competition_level_confirmed", "preferred_levels", "acceptable_levels",
+            "excluded_levels", "development_goals", "available_time_per_week",
+            "team_preference", "last_result", "recommendation_options",
+        ]
+    }
     fact_text = _correction_value_text(text)
-    state["turns"] = [*state.get("turns", []), text]
+    state["turns"] = [*state.get("turns", []), text][-8:]
     state["last_acknowledgement"] = ""
 
     state["intent"] = _detect_chat_intent(fact_text, state.get("intent", ""))
@@ -747,7 +787,7 @@ def _update_chat_state(
     elif any(phrase in fact_text for phrase in ["团队赛", "组队参加", "想组队", "有团队"]):
         state["team_preference"] = "团队赛"
 
-    if len(text) >= 80 and _looks_like_notification(text):
+    if is_notification:
         state["notification_text"] = text
 
     if "项目名称" in fact_text or "竞赛名称" in fact_text:
@@ -758,6 +798,8 @@ def _update_chat_state(
     material_map = {
         "报名简历": "generic_personal_resume", "个人简历": "generic_personal_resume",
         "简历": "generic_personal_resume", "报名表": "generic_application_form",
+        "项目申报书": "generic_application_form", "申报书": "generic_application_form",
+        "申报表": "generic_application_form",
         "计划书": "innovation_contest_business_plan",
         "PPT": "generic_ppt", "进度表": "generic_schedule", "清单": "challenge_cup_grand_checklist",
     }
@@ -767,22 +809,79 @@ def _update_chat_state(
             break
     if understanding:
         state = _apply_turn_understanding(state, understanding)
+    if is_notification:
+        state.update(protected_profile)
+        state["input_role"] = "competition_notice"
+        state["notification_text"] = text
+        if previous_intent:
+            state["intent"] = previous_intent
+        state["dialogue_action"] = "continue"
+        state["response_mode"] = "run_agent"
+        state["last_acknowledgement"] = "明白了，我会把这段内容作为竞赛通知处理，不会用它改动你的个人信息。"
+    current_major = str(state.get("major") or "").strip()
+    if previous_major and current_major and previous_major != current_major:
+        state = _reset_profile_dependent_state(state, current_major)
+    state["conversation_summary"] = _build_conversation_summary(state)
     return state
 
 
 def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, Any]) -> dict[str, Any]:
     """Merge a validated LLM turn interpretation without replacing deterministic safeguards."""
+    input_role = str(understanding.get("input_role") or "").strip()
+    if input_role in {
+        "user_profile", "competition_notice", "project_description",
+        "command", "followup", "chat",
+    }:
+        state["input_role"] = input_role
+
     allowed_intents = {"collect", "extract", "recommendation", "material", "full_process"}
     intent = str(understanding.get("intent") or "").strip()
     if intent in allowed_intents and not state.get("intent"):
         state["intent"] = intent
 
+    allowed_actions = {
+        "continue", "profile_change", "new_recommendation", "expand_recommendations",
+        "explain_recommendation_count", "compare_recommendations",
+        "competition_detail", "change_preferences", "generate_material", "chat",
+    }
+    dialogue_action = str(understanding.get("dialogue_action") or "").strip()
+    if dialogue_action in allowed_actions:
+        state["dialogue_action"] = dialogue_action
+    response_mode = str(understanding.get("response_mode") or "").strip()
+    if response_mode in {"run_agent", "answer_from_context", "ask_clarification"}:
+        state["response_mode"] = response_mode
+    options = understanding.get("recommendation_options")
+    if isinstance(options, dict):
+        clean_options = dict(state.get("recommendation_options") or {})
+        top_n = options.get("top_n")
+        if isinstance(top_n, int) and 1 <= top_n <= 10:
+            clean_options["top_n"] = top_n
+        for key in ["include_backup", "relax_quality_gate", "explanation_requested"]:
+            if isinstance(options.get(key), bool):
+                clean_options[key] = options[key]
+        state["recommendation_options"] = clean_options
+    if dialogue_action == "expand_recommendations":
+        expanded = dict(state.get("recommendation_options") or {})
+        expanded.setdefault("top_n", 5)
+        expanded.setdefault("include_backup", True)
+        expanded.setdefault("relax_quality_gate", True)
+        state["recommendation_options"] = expanded
+        state["intent"] = "recommendation"
+
     corrected_fields = understanding.get("corrected_fields", [])
     corrected_fields = corrected_fields if isinstance(corrected_fields, list) else []
     for key in ["major", "grade", "competition_type", "competition_level", "team_preference"]:
         value = str(understanding.get(key) or "").strip()
-        if value and (not state.get(key) or key in corrected_fields):
+        if value and (
+            not state.get(key)
+            or key in corrected_fields
+            or (key == "major" and dialogue_action == "profile_change")
+        ):
             state[key] = value
+
+    scope = str(understanding.get("competition_scope") or "").strip()
+    if scope in {"major_aligned", "cross_disciplinary", "both"}:
+        state["competition_scope"] = scope
 
     type_status = str(understanding.get("competition_type_status") or "").strip()
     if type_status == "no_preference":
@@ -832,6 +931,67 @@ def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, An
     return state
 
 
+def _reset_profile_dependent_state(state: dict[str, Any], major: str) -> dict[str, Any]:
+    """Start a fresh recommendation context when the user's academic identity changes."""
+    reset_values = {
+        "interests": [], "skills": [], "skills_skipped": False, "skill_gaps": [],
+        "competition_type": "", "competition_type_confirmed": False,
+        "competition_scope": "",
+        "excluded_competition_types": [], "competition_level": "",
+        "competition_level_confirmed": False, "preferred_levels": [],
+        "acceptable_levels": [], "excluded_levels": [], "notification_text": "",
+        "project_name": "", "material_type": "", "last_result": {},
+        "recommendation_options": {}, "intent": "recommendation",
+        "dialogue_action": "profile_change", "response_mode": "ask_clarification",
+        "last_acknowledgement": f"明白了，我们按{major}专业重新梳理，这次不沿用之前的方向和技能。",
+    }
+    return {**state, **reset_values}
+
+
+def _build_conversation_summary(state: dict[str, Any]) -> str:
+    """Build a compact factual memory for agents instead of replaying full chat history."""
+    facts = []
+    labels = [
+        ("major", "专业"), ("grade", "年级"), ("competition_type", "方向"),
+        ("competition_scope", "方向范围"),
+        ("competition_level", "级别"), ("team_preference", "参赛形式"),
+        ("project_name", "当前竞赛"), ("material_type", "材料类型"),
+    ]
+    for key, label in labels:
+        value = state.get(key)
+        if value:
+            facts.append(f"{label}：{value}")
+    list_labels = [
+        ("skills", "技能"), ("skill_gaps", "不擅长"),
+        ("development_goals", "发展目标"), ("excluded_levels", "排除级别"),
+        ("excluded_competition_types", "排除方向"),
+    ]
+    for key, label in list_labels:
+        values = state.get(key)
+        if isinstance(values, list) and values:
+            facts.append(f"{label}：{'、'.join(str(value) for value in values[:8])}")
+    if state.get("available_time_per_week") is not None:
+        facts.append(f"每周可投入：{state['available_time_per_week']}小时")
+    return "；".join(facts)
+
+
+def _semantic_followup_answer(
+    state: dict[str, Any], understanding: dict[str, Any] | None
+) -> str | None:
+    """Answer context-only meta questions without rerunning a sub-agent."""
+    if not understanding or not state.get("last_result"):
+        return None
+    if understanding.get("dialogue_action") != "explain_recommendation_count":
+        return None
+    recommendations = _recommendations_from_chat_state(state)
+    count = len(recommendations)
+    return (
+        f"这轮一共展示了 {count} 个结果。当前推荐会优先保留匹配度较高的主推荐，"
+        "较低分或同类型的候选可能被质量门槛和去重规则收进备选。"
+        "如果你愿意，我可以放宽门槛，把较合适的备选也一起列出来供你比较。"
+    )
+
+
 def _next_chat_question(state: dict[str, Any]) -> str | None:
     if not state.get("intent"):
         return (
@@ -848,25 +1008,39 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
             return "我记住你的年级了。再告诉我所学专业就可以，例如计算机、软件工程或工商管理。"
         if not state.get("grade"):
             return "专业方向了解了。你目前读大几，或者是在研究生阶段？我会据此判断参赛资格。"
-    if state["intent"] in {"recommendation", "full_process"}:
-        if not state.get("competition_type_confirmed") and not state.get("competition_level_confirmed"):
+    if state["intent"] == "material":
+        recommendations = _recommendations_from_chat_state(state)
+        if (
+            not state.get("notification_text")
+            and not state.get("project_name")
+            and not recommendations
+        ):
             return (
-                "接下来想听听你的偏好：你对人工智能、算法、数学建模、创新创业中的哪类更感兴趣？"
-                "对竞赛级别有要求的话，也可以一起告诉我。"
+                "基本情况已经记下了。接下来请把这次项目申报的完整通知或申报要求粘贴给我，"
+                "内容较长也没关系。我会先提取申报对象、赛道、时间和材料要求，再根据通知生成申报书。"
+            )
+    if state["intent"] in {"recommendation", "full_process"}:
+        if state.get("competition_scope") and not state.get("competition_type_confirmed"):
+            return (
+                "范围我已经清楚了。你具体更想尝试什么主题？"
+                "例如人工智能、算法、数学建模、金融科技或创新创业；如果主题不限，也可以直接告诉我。"
+            )
+        if not state.get("competition_type_confirmed") and not state.get("competition_level_confirmed"):
+            major = state.get("major") or "你目前的专业"
+            return (
+                f"我们按{major}重新看。你对哪个方向更感兴趣，希望比赛贴近本专业，还是也接受跨学科方向？"
+                "感兴趣的主题和期望的竞赛级别都可以用自己的话告诉我；暂时没偏好也没关系。"
             )
         if not state.get("competition_type_confirmed"):
-            return "竞赛级别我记下了。你更想尝试哪个方向？比如人工智能、算法、数学建模或创新创业。"
+            return "竞赛级别我记下了。你更想尝试什么主题或方向？直接用自己的话描述就可以。"
         if not state.get("competition_level_confirmed"):
             return "方向已经清楚了。你更倾向校级、省级、国家级还是国际级？如果没有硬性要求，也可以告诉我。"
         if not state.get("skills") and not state.get("skills_skipped"):
             return (
-                "为了把结果排得更贴合，你目前有哪些比较熟悉的技能？"
-                "比如 Python、C++、机器学习或团队协作。暂时没有特别擅长的也没关系，直接告诉我即可。"
+                "为了把结果排得更贴合，你目前有哪些比较熟悉的技能、知识、工具、项目经历或其他优势？"
+                "不一定是编程技能，按真实情况简单说就行；暂时没有特别擅长的也没关系。"
             )
     if state["intent"] in {"material", "full_process"}:
-        has_previous = bool(state.get("last_result"))
-        if not state.get("notification_text") and not state.get("project_name") and not has_previous:
-            return "可以。把竞赛通知贴给我，或者直接告诉我项目名称，我就能接着帮你准备材料。"
         recommendations = _recommendations_from_chat_state(state)
         if not state.get("project_name") and len(recommendations) > 1:
             choices = "；".join(
@@ -917,7 +1091,22 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
         "acceptable_levels": state.get("acceptable_levels", []),
         "excluded_levels": state.get("excluded_levels", []),
         "excluded_competition_types": state.get("excluded_competition_types", []),
+        "competition_scope": state.get("competition_scope", ""),
     }
+    options = state.get("recommendation_options") or {}
+    if task_type in {"recommendation", "full_process"} and options:
+        rules: dict[str, Any] = {}
+        if isinstance(options.get("top_n"), int):
+            rules["top_n"] = options["top_n"]
+        if options.get("include_backup") or options.get("relax_quality_gate"):
+            rules["quality_gate"] = {
+                "allow_backup": True,
+                "prefer_fewer": False,
+            }
+        if options.get("relax_quality_gate"):
+            rules["diversity"] = {"max_per_category": 2}
+        if rules:
+            payload["recommendation_rules"] = rules
     if state.get("material_type"):
         payload["material_type"] = state["material_type"]
     if state.get("project_name"):
@@ -944,10 +1133,13 @@ def _chat_standard_input(state: dict[str, Any], message: str) -> dict:
 
     return {
         "task_id": f"chat_task_{uuid4().hex[:8]}",
-        "user_input": "；".join(state.get("turns", [])) or message,
+        "user_input": message,
         "task_type": task_type,
         "user_profile": profile,
-        "context": {"conversation_turns": state.get("turns", [])},
+        "context": {
+            "conversation_summary": state.get("conversation_summary", ""),
+            "recent_turns": state.get("turns", [])[-4:],
+        },
         "input_data": payload,
         "history": [],
         "required_output": "markdown",
@@ -1032,7 +1224,12 @@ def chat_submit(message, history, state):
         state["turns"] = [*state.get("turns", []), message]
         history.append({"role": "assistant", "content": answer})
         return "", history, state, build_status_html(followup.get("status", "success"), followup.get("message")), answer, [], followup, _result_downloads(state["last_result"])
-    state = _update_chat_state(state, message)
+    understanding = main_agent.understand_conversation_turn(message, state)
+    state = _update_chat_state(state, message, understanding=understanding)
+    semantic_answer = _semantic_followup_answer(state, understanding)
+    if semantic_answer:
+        history.append({"role": "assistant", "content": semantic_answer})
+        return "", history, state, build_status_html("success"), semantic_answer, [], {}, _result_downloads(state.get("last_result", {}))
     question = _next_chat_question(state)
     if question:
         history.append({"role": "assistant", "content": question})

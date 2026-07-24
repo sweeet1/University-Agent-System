@@ -156,12 +156,27 @@ class MainAgent:
             key: state.get(key)
             for key in [
                 "intent", "major", "grade", "skills", "skill_gaps", "competition_type",
-                "competition_level", "development_goals", "available_time_per_week",
+                "competition_scope", "competition_level", "development_goals", "available_time_per_week",
                 "team_preference", "project_name", "material_type",
+                "conversation_summary", "dialogue_action", "recommendation_options",
             ]
         }
         schema = {
             "intent": "collect|extract|recommendation|material|full_process|empty",
+            "input_role": (
+                "user_profile|competition_notice|project_description|command|followup|chat"
+            ),
+            "dialogue_action": (
+                "continue|profile_change|new_recommendation|expand_recommendations|explain_recommendation_count|"
+                "compare_recommendations|competition_detail|change_preferences|generate_material|chat"
+            ),
+            "response_mode": "run_agent|answer_from_context|ask_clarification",
+            "recommendation_options": {
+                "top_n": "integer 1-10 or null",
+                "include_backup": "boolean or null",
+                "relax_quality_gate": "boolean or null",
+                "explanation_requested": "boolean",
+            },
             "major": "string or empty",
             "grade": "大一|大二|大三|大四|研究生|empty",
             "skills_add": ["string"],
@@ -169,6 +184,7 @@ class MainAgent:
             "skills_status": "provided|no_preference|unknown",
             "competition_type": "string or empty",
             "competition_type_status": "provided|no_preference|unknown",
+            "competition_scope": "major_aligned|cross_disciplinary|both|unknown",
             "excluded_competition_types": ["string"],
             "competition_level": "国际级|国家级|省级|校级|empty",
             "competition_level_status": "provided|no_preference|unknown",
@@ -190,8 +206,21 @@ class MainAgent:
                         "你负责理解大学生竞赛助手中的单轮用户表达。结合已有状态抽取本轮明确新增、修改、"
                         "否定、排除和无偏好信息。不要猜测未表达的专业、能力或目标；‘不会Python但会Java’"
                         "必须分别放入skills_remove和skills_add；‘除了数学建模都可以’必须放入排除项；"
+                        "先判断input_role。粘贴的竞赛通知、公告、赛程、参赛要求属于competition_notice；"
+                        "通知正文里的专业、学生、软件、人工智能等描述属于赛事内容，绝不能当成用户画像，"
+                        "此时major、grade、skills_add、skills_remove和corrected_fields必须为空，"
+                        "也不能输出profile_change。用户自己的项目介绍属于project_description。"
                         "‘没有硬性要求’要结合上下文判断当前被询问字段并标记no_preference。"
+                        "用户说贴近本专业、接受跨学科、两者都行时，分别输出competition_scope为"
+                        "major_aligned、cross_disciplinary、both；如果用户只确认范围但没有具体主题，"
+                        "competition_type_status应为unknown，不能把范围偏好误当成具体主题或无偏好。"
+                        "只有用户明确说主题不限、方向都可以或没有主题偏好时，才输出no_preference。"
                         "用户取消材料并要求重新推荐时intent必须是recommendation。已有intent在用户没有明确换任务时应保持。"
+                        "如果用户明确给出与已有状态不同的专业或身份，dialogue_action必须是profile_change，"
+                        "把major列入corrected_fields，并将新专业写入major。"
+                        "还要判断本轮对话动作，而不是依赖固定措辞：用户认为结果少、要求更多、换一批或接受次优候选时，"
+                        "dialogue_action用expand_recommendations，并给出合理的recommendation_options；只询问为什么结果少时，"
+                        "用explain_recommendation_count和answer_from_context；询问上一轮某项详情或比较时，不要当成新推荐。"
                         "acknowledgement要像自然对话，优先使用‘明白了’‘了解’‘这样我就清楚了’，"
                         "不要使用‘已记录’‘字段’‘状态’等系统日志口吻。只输出JSON。"
                     ),
@@ -236,6 +265,20 @@ class MainAgent:
         continue through the normal task-planning flow.
         """
         state = conversation_state or {}
+        if self._is_result_status_request(user_input):
+            answer = self._build_previous_result_status_answer(previous_result)
+            if answer:
+                return self._build_output(
+                    task_id=self._get_task_id(previous_result),
+                    status="need_input",
+                    data={"final_answer": answer},
+                    message="MainAgent explained why no recommendation result was produced.",
+                    next_action="adjust_search_constraints",
+                    metadata={
+                        "followup_type": "result_status",
+                        "agents_dispatched": [],
+                    },
+                )
         if (
             state.get("intent") in {"material", "full_process"}
             and not state.get("project_name")
@@ -382,6 +425,54 @@ class MainAgent:
             "什么时候", "截止", "报名", "组队", "团队", "主办方", "含金量",
             "难度", "适合我", "这个比赛", "这个竞赛", "它",
         ])
+
+    @staticmethod
+    def _is_result_status_request(message: str) -> bool:
+        text = re.sub(r"[\s，,。.!！?？]", "", str(message or ""))
+        return text in {
+            "结果呢", "结果在哪里", "怎么没有结果", "为什么没有结果",
+            "推荐结果呢", "没有推荐吗", "怎么没推荐",
+            "什么信息", "缺什么信息", "还需要什么", "需要补充什么",
+        }
+
+    def _build_previous_result_status_answer(
+        self, previous_result: dict[str, Any]
+    ) -> str | None:
+        agent_results = previous_result.get("data", {}).get("agent_results", [])
+        if not isinstance(agent_results, list):
+            return None
+        if self._recommendations_from_result(previous_result):
+            return None
+
+        actionable = self._build_actionable_issue_answer(agent_results)
+        if actionable:
+            return actionable
+
+        collected_count = None
+        failed_messages = []
+        for result in agent_results:
+            data = result.get("data", {}) if isinstance(result, dict) else {}
+            if result.get("agent_name") == "info_collect_agent":
+                raw_items = data.get("raw_items")
+                if isinstance(raw_items, list):
+                    collected_count = len(raw_items)
+            if result.get("status") in {"failed", "need_input", "skipped"}:
+                message = str(result.get("message") or "").strip()
+                if message:
+                    failed_messages.append(message)
+
+        if collected_count == 0:
+            return (
+                "这轮没有生成可展示的推荐结果。采集阶段没有找到符合当前专业方向和级别条件的"
+                "有效竞赛，后续提取与评分因此无法继续。你可以放宽竞赛级别，或者告诉我是否接受"
+                "与本专业相关的交叉方向，我会基于新条件重新查找。"
+            )
+        if failed_messages:
+            return (
+                "这轮没有生成可展示的推荐结果，原因是候选信息在采集或整理阶段没有满足推荐所需的"
+                "完整条件。你的个人信息已经保留，可以调整方向或级别后重新查找。"
+            )
+        return None
 
     @staticmethod
     def _is_comparison_request(message: str) -> bool:
@@ -928,6 +1019,30 @@ If no agent is needed, selected_agents must be empty.
                 payload["keywords"] = [user_input]
         return payload
 
+    @staticmethod
+    def _collection_keywords_from_profile(profile: dict[str, Any]) -> list[str]:
+        """Use durable profile facts for collection; never use the latest chat reply."""
+        if not isinstance(profile, dict):
+            return []
+
+        keywords = [
+            str(value).strip()
+            for value in profile.get("interests", [])
+            if str(value).strip()
+        ]
+        major = str(profile.get("major") or "").strip()
+        if major:
+            keywords.append(major)
+            normalized = major.removesuffix("专业")
+            for suffix in ("科学与技术", "工程", "学"):
+                if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                    normalized = normalized[: -len(suffix)]
+                    break
+            if len(normalized) >= 2:
+                keywords.append(normalized)
+
+        return list(dict.fromkeys(keywords))
+
     def _adapt_info_extract_input(
         self,
         original_input: dict[str, Any],
@@ -1100,19 +1215,94 @@ If no agent is needed, selected_agents must be empty.
     def _build_final_answer(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:
         planning = planning or {}
         if planning.get("need_user_input"):
-            return "还差一点关键信息。你补充后，我就能继续处理。"
+            missing = [
+                str(item).strip()
+                for item in planning.get("missing_information", [])
+                if str(item).strip()
+            ]
+            if missing:
+                return f"还缺少这些信息：{'、'.join(missing)}。补充后我就可以继续。"
+            return "当前任务还缺少明确输入，请告诉我具体要找的竞赛方向或要处理的材料。"
 
         if not agent_results:
             return "我还没能确定下一步怎么处理。你可以换一种说法，告诉我想找竞赛、整理通知，还是准备材料。"
 
         statuses = [result.get("status", "failed") for result in agent_results]
+        actionable_issue = self._build_actionable_issue_answer(agent_results)
+        if actionable_issue and any(
+            status in {"failed", "need_input", "skipped"} for status in statuses
+        ):
+            return actionable_issue
+        recommendations = self._recommendations_from_agent_results(agent_results)
+        collected_count = self._collected_item_count(agent_results)
+        if not recommendations and collected_count == 0:
+            return (
+                "这轮没有找到符合当前专业方向和竞赛级别的有效候选，因此暂时没有推荐结果。"
+                "你可以放宽级别，或者允许本专业相关的交叉方向，我再重新查找。"
+            )
         if all(status == "success" for status in statuses):
             return "已经处理完成。你可以继续问我其中某个竞赛的详情，或者选择一个项目准备报名材料。"
         if any(status == "success" for status in statuses):
             return "我已经整理出一部分结果，不过还有少量信息没有完整获取。建议你先查看现有内容，我会把需要核实的地方保留下来。"
         if any(status == "need_input" for status in statuses):
-            return "还需要你补充一点信息，我才能继续给出可靠结果。"
+            return "当前缺少可供处理的具体数据，请补充竞赛通知、候选项目或明确的材料内容。"
         return "这次处理没有顺利完成，可能是数据源或模型服务暂时不可用。你可以稍后重试，我会保留已经提供的条件。"
+
+    @staticmethod
+    def _build_actionable_issue_answer(
+        agent_results: list[dict[str, Any]],
+    ) -> str | None:
+        """Explain whether the missing input belongs to the user or the data pipeline."""
+        issue_texts = []
+        for result in agent_results:
+            if result.get("status") not in {"failed", "need_input", "skipped"}:
+                continue
+            error = result.get("error") or {}
+            issue_texts.append(str(result.get("message") or ""))
+            if isinstance(error, dict):
+                issue_texts.extend([
+                    str(error.get("message") or ""),
+                    str(error.get("error_message") or ""),
+                    str(error.get("suggestion") or ""),
+                ])
+        issue_text = " ".join(issue_texts).lower()
+
+        if "row-level security" in issue_text or "42501" in issue_text:
+            return (
+                "你的专业、年级和竞赛方向已经足够，不需要继续补充个人信息。"
+                "这次没有生成推荐，是因为竞赛数据库的写入权限被 Supabase RLS 策略拦截，"
+                "需要先修复数据库权限后再重新查询。"
+            )
+        if "structured_items" in issue_text or "结构化项目数据" in issue_text:
+            return (
+                "你的个人信息已经足够。当前缺少的是可供评分的竞赛候选数据，"
+                "不是你的专业、年级或技能；请先恢复竞赛数据采集，或提供一份具体竞赛通知后再推荐。"
+            )
+        if "user_profile" in issue_text or "用户画像" in issue_text:
+            return "还缺少你的专业和年级；告诉我这两项后，我就可以继续筛选竞赛。"
+        return None
+
+    @staticmethod
+    def _recommendations_from_agent_results(
+        agent_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        for result in agent_results:
+            recommendations = result.get("data", {}).get("recommendations")
+            if isinstance(recommendations, list) and recommendations:
+                return recommendations
+        return []
+
+    @staticmethod
+    def _collected_item_count(
+        agent_results: list[dict[str, Any]],
+    ) -> int | None:
+        for result in agent_results:
+            if result.get("agent_name") != "info_collect_agent":
+                continue
+            raw_items = result.get("data", {}).get("raw_items")
+            if isinstance(raw_items, list):
+                return len(raw_items)
+        return None
 
     def _resolve_final_status(self, agent_results: list[dict[str, Any]], planning: dict[str, Any] | None = None) -> str:
         planning = planning or {}

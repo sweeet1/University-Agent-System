@@ -38,12 +38,15 @@ def _assert(condition: bool, message: str) -> None:
 
 
 def _agent(config: dict | None = None) -> RecommendationAgent:
-    """单测默认关闭 LLM 润色，避免外网依赖与不稳定耗时。"""
+    """单测默认关闭 LLM 润色/精排，避免外网依赖与不稳定耗时。"""
     cfg = dict(config or load_config())
     rec = dict(cfg.get("recommendation") or {})
     copy_cfg = dict(rec.get("llm_copywriting") or {})
     copy_cfg["enabled"] = False
     rec["llm_copywriting"] = copy_cfg
+    rerank_cfg = dict(rec.get("semantic_rerank") or {})
+    rerank_cfg["enabled"] = False
+    rec["semantic_rerank"] = rerank_cfg
     cfg["recommendation"] = rec
     return RecommendationAgent(cfg)
 
@@ -217,6 +220,89 @@ def test_hard_filter_expired_deadline() -> None:
     _assert(result["data"]["hard_filtered_count"] >= 1, "应统计硬过滤数量")
 
 
+def test_force_top_n_after_prefer_fewer() -> None:
+    """prefer_fewer 砍掉 B/C 后，force_top_n 仍应补回至 3（标 is_backup）。"""
+    agent = _agent(
+        {
+            "recommendation": {
+                "diversity": {"enabled": False},
+                "prestige": {"enabled": False},
+                "llm_copywriting": {"enabled": False},
+                "force_top_n": True,
+                "quality_gate": {
+                    "enabled": True,
+                    "min_primary_level": "A",
+                    "prefer_fewer": True,
+                    "allow_backup": True,
+                },
+                "level_thresholds": {"S": 80, "A": 65, "B": 50, "C": 0},
+                "weights": {
+                    "interest_score": 1,
+                    "ability_score": 0,
+                    "deadline_score": 0,
+                    "team_score": 0,
+                    "grade_score": 0,
+                    "major_score": 0,
+                },
+            }
+        }
+    )
+    payload = _base_input()
+    payload["user_profile"]["interests"] = ["人工智能"]
+    payload["input_data"]["recommendation_rules"] = {
+        "top_n": 3,
+        "force_top_n": True,
+        "diversity": {"enabled": False},
+        "quality_gate": {
+            "enabled": True,
+            "min_primary_level": "A",
+            "prefer_fewer": True,
+        },
+    }
+    # 一条强兴趣命中（偏 A），两条弱相关（偏 B/C）
+    payload["input_data"]["structured_items"] = [
+        {
+            "title": "强匹配人工智能赛",
+            "deadline": "2026-09-01",
+            "requirements": {
+                "tags": ["人工智能"],
+                "category": "人工智能",
+                "team_requirement": "不限",
+                "target_education": ["本科"],
+            },
+        },
+        {
+            "title": "弱相关英语赛",
+            "deadline": "2026-09-10",
+            "requirements": {
+                "tags": ["英语"],
+                "category": "英语",
+                "team_requirement": "不限",
+                "target_education": ["本科"],
+            },
+        },
+        {
+            "title": "弱相关创业赛",
+            "deadline": "2026-09-15",
+            "requirements": {
+                "tags": ["创新创业"],
+                "category": "创新创业",
+                "team_requirement": "不限",
+                "target_education": ["本科"],
+            },
+        },
+    ]
+    result = agent.run(payload)
+    _assert(result["status"] == "success", f"应成功: {result.get('status')}")
+    recs = result["data"]["recommendations"]
+    _assert(len(recs) == 3, f"强制 Top3，实际 {len(recs)}: {[r['title'] for r in recs]}")
+    _assert(recs[0]["title"] == "强匹配人工智能赛", recs[0]["title"])
+    _assert(
+        any(r.get("is_backup") for r in recs[1:]),
+        "补齐项应标 is_backup",
+    )
+
+
 def test_diversity_not_all_same_category() -> None:
     agent = _agent(
         {
@@ -330,6 +416,80 @@ def test_enrollment_grade_around_september() -> None:
     _assert(enrollment_to_grade(2024, date(2025, 8, 31)) == "大一", "2025-08 仍为大一")
 
 
+def test_semantic_rerank_disabled_passthrough() -> None:
+    from agents.ReAgent_New.semantic_rerank import apply_semantic_rerank
+
+    scored = [
+        {
+            "item": {"title": "A"},
+            "total": 80.0,
+            "scores": {"interest_score": 70.0, "ability_score": 60.0},
+            "matched_signals": [],
+            "unmatched_signals": [],
+        }
+    ]
+    out, meta = apply_semantic_rerank(
+        scored,
+        {"major": "CS"},
+        {"interest_score": 0.5, "ability_score": 0.5},
+        settings={"enabled": False},
+    )
+    _assert(out is scored or out == scored, "关闭精排时应原样返回")
+    _assert(meta.get("used") is False, "关闭时不应标记 used")
+
+
+def test_semantic_rerank_blend_with_mock() -> None:
+    from agents.ReAgent_New import semantic_rerank as sr
+
+    scored = [
+        {
+            "item": {"title": "算法竞赛", "requirements": {"tags": ["编程"]}},
+            "total": 50.0,
+            "scores": {
+                "interest_score": 40.0,
+                "ability_score": 50.0,
+                "timeline_score": 0,
+                "prestige_score": 0,
+                "freshness_score": 0,
+            },
+            "matched_signals": [],
+            "unmatched_signals": [],
+        }
+    ]
+    weights = {k: 0.2 for k in ("interest_score", "ability_score", "timeline_score", "prestige_score", "freshness_score")}
+
+    original_creds = sr._resolve_llm_credentials
+    original_call = sr._call_chat_completions
+    sr._resolve_llm_credentials = lambda _cfg: {
+        "enabled": True,
+        "api_key": "x",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "timeout": 30,
+    }
+    sr._call_chat_completions = lambda **_kw: {
+        "ok": True,
+        "content": '{"items":[{"id":0,"interest_score":100,"ability_score":80,"matched":["编程"],"unmatched":[]}]}',
+    }
+    try:
+        out, meta = sr.apply_semantic_rerank(
+            scored,
+            {"major": "计算机", "skills": ["Python"], "interests": ["算法"]},
+            weights,
+            settings={"enabled": True, "blend": 0.7, "pool_size": 8},
+        )
+    finally:
+        sr._resolve_llm_credentials = original_creds
+        sr._call_chat_completions = original_call
+
+    _assert(meta.get("used") is True, "mock 成功时应 used")
+    scores = out[0]["scores"]
+    # blend 0.7: interest = 0.7*100 + 0.3*40 = 82
+    _assert(abs(scores["interest_score"] - 82.0) < 0.2, f"interest blend 异常: {scores}")
+    _assert(scores.get("interest_score_llm") == 100.0, "应保留 LLM 分")
+    _assert(out[0].get("semantic_reranked") is True, "应标记 semantic_reranked")
+
+
 def test_weights_normalized() -> None:
     agent = _agent(
         {
@@ -413,6 +573,7 @@ def test_eval_cases_hit_and_avoid() -> None:
         case_input = case["input"]
         rules = dict(case_input.get("input_data", {}).get("recommendation_rules") or {})
         rules["llm_copywriting"] = {"enabled": False}
+        rules["semantic_rerank"] = {"enabled": False}
         case_input.setdefault("input_data", {})["recommendation_rules"] = rules
         result = agent.run(case_input)
         titles = [r["title"] for r in result["data"].get("recommendations", [])]
@@ -442,6 +603,7 @@ def test_main_agent_runs_structured_recommendation() -> None:
     cfg = load_config()
     rec = dict(cfg.get("recommendation") or {})
     rec["llm_copywriting"] = {"enabled": False}
+    rec["semantic_rerank"] = {"enabled": False}
     cfg["recommendation"] = rec
     main_agent = MainAgent(config=cfg)
     result = main_agent.run(_base_input())
@@ -555,10 +717,13 @@ def main() -> int:
         test_need_input_when_profile_missing,
         test_failed_when_items_type_invalid,
         test_hard_filter_expired_deadline,
+        test_force_top_n_after_prefer_fewer,
         test_diversity_not_all_same_category,
         test_looking_for_teammate_matches_team_contest,
         test_ai_interest_not_auto_match_all_cs_tags,
         test_enrollment_grade_around_september,
+        test_semantic_rerank_disabled_passthrough,
+        test_semantic_rerank_blend_with_mock,
         test_weights_normalized,
         test_prefs_exclude_tags,
         test_eval_cases_hit_and_avoid,
