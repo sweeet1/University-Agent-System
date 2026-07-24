@@ -110,6 +110,7 @@ RECOMMENDATION_RULE_KEYS = (
 # ---------------------------------------------------------------------------
 DATA_KEYS = (
     "recommendations",       # Top-N 推荐结果列表
+    "recommendation_pool",   # 一次打分缓存的更大候选池，供扩容复用
     "total_count",           # 输入候选项目总数
     "matched_count",         # 通过硬门槛并参与排序的项目数
     "hard_filtered_count",   # 被硬性门槛剔除的数量（原版已返回，契约保留）

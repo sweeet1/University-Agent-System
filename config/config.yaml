@@ -64,6 +64,7 @@ recommendation:
   hard_constraints: true
   hard_major_min_score: 50
   top_n: 3                 # MainAgent / rules 未传 top_n 时的默认条数
+  recommendation_pool_size: 10  # 一次打分缓存池；扩容推荐时复用，不重跑抽取/评分
   weights:
     interest_score: 0.30
     ability_score: 0.25

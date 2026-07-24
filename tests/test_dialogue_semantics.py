@@ -16,9 +16,23 @@ def _run_turns(messages: list[str]) -> dict:
     ("name", "messages", "expected", "next_question_must_not_contain"),
     [
         (
+            "no hard level requirement soft phrasing",
+            [
+                "我是人工智能专业大四学生，想参加数学建模方面的竞赛",
+                "没什么硬性要求",
+            ],
+            {
+                "major": "人工智能",
+                "competition_type": "数学建模",
+                "competition_level_confirmed": True,
+                "competition_level": "",
+            },
+            "校级、省级、国家级还是国际级",
+        ),
+        (
             "no hard level requirement",
             ["我是计算机专业大三学生，想参加人工智能竞赛", "没有硬性要求"],
-            {"competition_level_confirmed": True, "competition_level": ""},
+            {"competition_level_confirmed": True, "competition_level": "", "competition_type": "人工智能"},
             "校级、省级、国家级还是国际级",
         ),
         (
@@ -34,10 +48,10 @@ def _run_turns(messages: list[str]) -> dict:
             "校级、省级、国家级还是国际级",
         ),
         (
-            "no category preference",
+            "direction can be open preference",
             ["我是计算机大二，想找国家级竞赛", "方向没有偏好，都可以"],
-            {"competition_type_confirmed": True, "competition_type": ""},
-            "哪个方向",
+            {"competition_type_confirmed": True, "competition_type": "", "competition_level": "国家级"},
+            "竞赛方向还需要明确",
         ),
         (
             "data mining and modern skills",
@@ -101,6 +115,19 @@ def _run_turns(messages: list[str]) -> dict:
             "",
         ),
         (
+            "major is not competition direction",
+            ["我是人工智能专业大四学生，想参加数学建模方面的竞赛，省级的就可以，我没有什么很擅长的"],
+            {
+                "major": "人工智能",
+                "grade": "大四",
+                "competition_type": "数学建模",
+                "competition_level": "省级",
+                "skills_skipped": True,
+                "skills": ["暂无"],
+            },
+            "",
+        ),
+        (
             "competition direction is not automatically a major",
             ["我大三，想参加人工智能竞赛"],
             {"major": "", "grade": "大三", "competition_type": "人工智能"},
@@ -127,7 +154,13 @@ def _run_turns(messages: list[str]) -> dict:
         (
             "unknown skills accepted",
             ["我是工商管理大二，想参加国家级创新创业竞赛", "我暂时不清楚自己擅长什么"],
-            {"skills_skipped": True},
+            {"skills_skipped": True, "skills": ["暂无"]},
+            "比较熟悉的技能",
+        ),
+        (
+            "no special strengths phrase",
+            ["我是计算机专业大三学生，想参加国家级人工智能竞赛", "没什么擅长的"],
+            {"skills_skipped": True, "skills": ["暂无"]},
             "比较熟悉的技能",
         ),
         (

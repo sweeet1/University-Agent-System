@@ -8,7 +8,11 @@ from app import (
     _apply_turn_understanding,
     _build_conversation_summary,
     _chat_standard_input,
+    _expand_recommendations_from_cache,
     _next_chat_question,
+    _profile_edit_followup_answer,
+    _recommendations_from_chat_state,
+    _should_hold_after_profile_edit,
     _update_chat_state,
     build_academic_profile,
     build_standard_input,
@@ -151,7 +155,7 @@ def test_chat_collects_context_across_multiple_turns():
     assert state["major"] == "计算机科学与技术"
     assert state["grade"] == "大三"
     question = _next_chat_question(state)
-    assert "哪个方向" in question or "更感兴趣" in question
+    assert "方向" in question
 
     state = _update_chat_state(state, "我更喜欢算法，也会Python")
     assert state["competition_type"] == "算法与程序设计"
@@ -456,6 +460,104 @@ def test_chat_correction_uses_replacement_value_only():
     assert state["major"] == "软件工程"
 
 
+def test_field_edit_holds_agent_and_asks_next_action():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+        "competition_level": "省级",
+        "competition_level_confirmed": True,
+        "skills_skipped": True,
+        "last_result": {"status": "success"},
+    }
+    state = _update_chat_state(state, "级别改成国家级")
+
+    assert state["competition_level"] == "国家级"
+    assert state.get("_edited_fields") == ["竞赛级别"]
+    assert _next_chat_question(state) is None
+    edited = _should_hold_after_profile_edit(state, {"dialogue_action": "change_preferences"})
+    assert edited == ["竞赛级别"]
+    answer = _profile_edit_followup_answer(edited)
+    assert "修改完成" in answer
+    assert "不会立刻重新筛选" in answer
+    assert "接下来想做什么" in answer
+
+
+def test_field_edit_llm_primary_over_lexicon():
+    """Natural phrasing that lexicon misses should still update via LLM."""
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+        "competition_level": "省级",
+        "competition_level_confirmed": True,
+        "skills_skipped": True,
+        "last_result": {"status": "success"},
+    }
+    # Lexicon alone does not map「国赛」→国家级
+    offline = _update_chat_state(dict(state), "级别想冲一冲国赛")
+    assert offline["competition_level"] == "省级"
+    assert not offline.get("_edited_fields")
+
+    updated = _update_chat_state(
+        state,
+        "级别想冲一冲国赛",
+        understanding={
+            "intent": "recommendation",
+            "dialogue_action": "change_preferences",
+            "competition_level": "国家级",
+            "corrected_fields": ["competition_level"],
+            "acknowledgement": "明白了，级别按国家级来。",
+        },
+    )
+    assert updated["competition_level"] == "国家级"
+    assert updated.get("_edited_fields") == ["竞赛级别"]
+    assert _should_hold_after_profile_edit(
+        updated, {"dialogue_action": "change_preferences"}
+    ) == ["竞赛级别"]
+
+
+def test_field_edit_llm_overrides_conflicting_lexicon_draft():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+        "competition_level": "省级",
+        "competition_level_confirmed": True,
+        "skills_skipped": True,
+    }
+    # Lexicon may latch onto「省级」first; non-empty LLM value must win.
+    updated = _update_chat_state(
+        state,
+        "请改成校级，不是省级",
+        understanding={
+            "intent": "recommendation",
+            "dialogue_action": "change_preferences",
+            "competition_level": "校级",
+            "corrected_fields": ["competition_level"],
+        },
+    )
+    assert updated["competition_level"] == "校级"
+
+
+def test_first_time_profile_fill_does_not_count_as_field_edit():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大三学生，想参加国家级人工智能竞赛",
+    )
+    assert not state.get("_edited_fields")
+    assert "比较熟悉的技能" in (_next_chat_question(state) or "")
+
+
 def test_chat_correction_selects_replacement_project():
     state = {
         **new_chat_state(),
@@ -481,7 +583,7 @@ def test_chat_asks_for_skills_before_recommendation():
 
     question = _next_chat_question(state)
     assert "比较熟悉的技能" in question
-    assert "暂时没有特别擅长的也没关系" in question
+    assert "没什么擅长的也可以直接说" in question
 
 
 def test_chat_allows_user_to_continue_without_declared_skills():
@@ -492,6 +594,19 @@ def test_chat_allows_user_to_continue_without_declared_skills():
 
     state = _update_chat_state(state, "暂时没有特别擅长的技能")
 
+    assert state["skills_skipped"] is True
+    assert state["skills"] == ["暂无"]
+    assert _next_chat_question(state) is None
+
+
+def test_skills_no_strength_phrase_fills_temporary_none():
+    state = _update_chat_state(
+        new_chat_state(),
+        "我是计算机专业大三学生，想参加国家级人工智能竞赛",
+    )
+    state = _update_chat_state(state, "没什么擅长的")
+
+    assert state["skills"] == ["暂无"]
     assert state["skills_skipped"] is True
     assert _next_chat_question(state) is None
 
@@ -515,10 +630,91 @@ def test_chat_accepts_explicit_no_level_preference_without_repeating_question():
 
     assert state["competition_level_confirmed"] is True
     assert state["competition_level"] == ""
+    assert state["competition_type"] == "人工智能"
     assert "级别" not in (_next_chat_question(state) or "")
 
 
-def test_chat_accepts_explicit_no_category_preference():
+def test_level_soft_preference_does_not_clear_competition_type():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "人工智能",
+        "grade": "大四",
+        "competition_type": "数学建模",
+        "competition_type_confirmed": True,
+        "skills_skipped": True,
+    }
+    state = _update_chat_state(state, "没什么硬性要求", understanding={
+        "intent": "recommendation",
+        "competition_level_status": "no_preference",
+        # 模拟 LLM 误把「硬性要求」当成方向无偏好，并乱改专业
+        "competition_type_status": "no_preference",
+        "competition_type": "",
+        "major": "计算机科学与技术",
+        "skills_status": "no_preference",
+        "acknowledgement": "明白了，级别没有硬性要求。",
+    })
+
+    assert state["major"] == "人工智能"
+    assert state["competition_type"] == "数学建模"
+    assert state["competition_type_confirmed"] is True
+    assert state["competition_level"] == ""
+    assert state["competition_level_confirmed"] is True
+    assert state["skills_skipped"] is True
+    assert _next_chat_question(state) is None
+
+
+def test_direction_soft_preference_does_not_clear_level():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_level": "国家级",
+        "competition_level_confirmed": True,
+    }
+    state = _update_chat_state(state, "方向没有偏好，都可以", understanding={
+        "intent": "recommendation",
+        "competition_type_status": "no_preference",
+        "competition_level_status": "no_preference",
+        "competition_level": "",
+    })
+
+    assert state["competition_type"] == ""
+    assert state["competition_type_confirmed"] is True
+    assert state["competition_level"] == "国家级"
+    assert state["competition_level_confirmed"] is True
+    assert "方向" not in (_next_chat_question(state) or "")
+
+
+def test_skills_soft_preference_does_not_clear_type_or_level():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_type": "算法与程序设计",
+        "competition_type_confirmed": True,
+        "competition_level": "省级",
+        "competition_level_confirmed": True,
+    }
+    state = _update_chat_state(state, "暂时没有特别擅长的", understanding={
+        "intent": "recommendation",
+        "skills_status": "no_preference",
+        "competition_type_status": "no_preference",
+        "competition_level_status": "no_preference",
+        "major": "软件工程",
+    })
+
+    assert state["major"] == "计算机科学与技术"
+    assert state["competition_type"] == "算法与程序设计"
+    assert state["competition_level"] == "省级"
+    assert state["skills_skipped"] is True
+    assert state["skills"] == ["暂无"]
+    assert _next_chat_question(state) is None
+
+
+def test_chat_accepts_direction_no_preference_without_repeating_question():
     state = _update_chat_state(
         new_chat_state(),
         "我是计算机专业大二学生，想找国家级竞赛",
@@ -527,7 +723,9 @@ def test_chat_accepts_explicit_no_category_preference():
 
     assert state["competition_type_confirmed"] is True
     assert state["competition_type"] == ""
-    assert "哪个方向" not in (_next_chat_question(state) or "")
+    assert state["competition_level"] == "国家级"
+    assert "方向" not in (_next_chat_question(state) or "")
+    assert "比较熟悉的技能" in (_next_chat_question(state) or "")
 
 
 def test_chat_does_not_treat_excluded_category_as_preference():
@@ -705,9 +903,63 @@ def test_llm_understanding_cannot_overwrite_a_known_intent_without_transition():
         "competition_level_status": "no_preference",
     })
 
+    # intent 仍不可随意切换；本轮显式给出的 competition_type 可覆盖
     assert state["intent"] == "recommendation"
-    assert state["competition_type"] == "人工智能"
+    assert state["competition_type"] == "算法竞赛"
     assert state["competition_level_confirmed"] is True
+
+
+def test_llm_empty_competition_type_does_not_wipe_prior_value():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "competition_type": "人工智能",
+        "competition_type_confirmed": True,
+    }
+
+    state = _apply_turn_understanding(state, {
+        "intent": "recommendation",
+        "competition_type": "",
+        "skills_add": ["Python"],
+    })
+
+    assert state["competition_type"] == "人工智能"
+    assert state["skills"] == ["Python"]
+
+
+def test_llm_overrides_rule_draft_for_major_and_competition_type():
+    """规则可能把「人工智能专业」误写成方向；LLM 非空值应纠正。"""
+    message = "我是人工智能专业大四学生，想参加数学建模方面的竞赛，省级的就可以"
+    state = _update_chat_state(new_chat_state(), message, understanding={
+        "intent": "recommendation",
+        "major": "人工智能",
+        "grade": "大四",
+        "competition_type": "数学建模",
+        "competition_level": "省级",
+        "acknowledgement": "明白了，按数学建模方向帮你看省级竞赛。",
+    })
+
+    assert state["major"] == "人工智能"
+    assert state["competition_type"] == "数学建模"
+    assert state["grade"] == "大四"
+    assert state["competition_level"] == "省级"
+
+
+def test_known_skills_lexicon_skipped_when_understanding_present():
+    state = _update_chat_state(
+        new_chat_state(),
+        "计算机专业大三，想参加算法竞赛，也会一点机器学习",
+        understanding={
+            "intent": "recommendation",
+            "major": "计算机科学与技术",
+            "grade": "大三",
+            "competition_type": "算法与程序设计",
+            "skills_add": ["Python"],
+        },
+    )
+
+    assert state["skills"] == ["Python"]
+    assert "机器学习" not in state["skills"]
 
 
 def test_turn_understanding_falls_back_cleanly_when_llm_is_disabled(monkeypatch):
@@ -736,6 +988,75 @@ def test_llm_action_expands_recommendations_without_phrase_rules():
     assert rules["top_n"] == 6
     assert rules["quality_gate"]["prefer_fewer"] is False
     assert request["user_input"] == "结果显得有些单薄"
+
+
+def test_expand_recommendations_uses_cached_pool_without_rerun():
+    pool = [
+        {"title": f"竞赛{index}", "match_score": 90 - index, "summary": f"简介{index}", "reason": "匹配"}
+        for index in range(1, 8)
+    ]
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "recommendation_options": {"top_n": 6, "include_backup": True},
+        "dialogue_action": "expand_recommendations",
+        "last_result": {
+            "status": "success",
+            "data": {
+                "agent_results": [
+                    {
+                        "agent_name": "recommendation_agent",
+                        "status": "success",
+                        "data": {
+                            "recommendations": pool[:3],
+                            "recommendation_pool": pool,
+                        },
+                    }
+                ]
+            },
+        },
+    }
+    understanding = {
+        "intent": "recommendation",
+        "dialogue_action": "expand_recommendations",
+        "response_mode": "answer_from_context",
+        "recommendation_options": {"top_n": 6},
+    }
+
+    answer = _expand_recommendations_from_cache(state, understanding)
+
+    assert answer is not None
+    assert "现在一共给你看 6 条" in answer
+    assert "又多找了几条" in answer
+    shown = _recommendations_from_chat_state(state)
+    assert len(shown) == 6
+    assert shown[0]["title"] == "竞赛1"
+    assert shown[5]["title"] == "竞赛6"
+    assert shown[3]["rank"] == 4
+
+
+def test_expand_recommendations_without_pool_falls_through():
+    state = {
+        **new_chat_state(),
+        "last_result": {
+            "status": "success",
+            "data": {
+                "agent_results": [
+                    {
+                        "data": {
+                            "recommendations": [{"title": "仅三条之一", "match_score": 80}],
+                        }
+                    }
+                ]
+            },
+        },
+    }
+    assert _expand_recommendations_from_cache(state, {
+        "dialogue_action": "expand_recommendations",
+        "recommendation_options": {"top_n": 6},
+    }) is None
 
 
 def test_conversation_context_is_compacted_for_agent_input():
@@ -785,7 +1106,7 @@ def test_major_change_starts_fresh_recommendation_context():
     assert _next_chat_question(state) is not None
 
 
-def test_cross_disciplinary_scope_still_asks_for_specific_topic():
+def test_cross_disciplinary_scope_accepts_open_direction():
     state = {
         **new_chat_state(),
         "intent": "recommendation",
@@ -796,17 +1117,17 @@ def test_cross_disciplinary_scope_still_asks_for_specific_topic():
         "intent": "recommendation",
         "dialogue_action": "change_preferences",
         "competition_scope": "both",
-        "competition_type_status": "unknown",
+        "competition_type_status": "no_preference",
         "competition_level_status": "unknown",
         "acknowledgement": "明白了，本专业相关和跨学科方向都可以考虑。",
     })
 
     assert state["competition_scope"] == "both"
-    assert state["competition_type_confirmed"] is False
+    assert state["competition_type_confirmed"] is True
+    assert state["competition_type"] == ""
     question = _next_chat_question(state)
-    assert "具体" in question
-    assert "主题" in question
-    assert "跨学科方向" not in question
+    assert "校级、省级、国家级还是国际级" in (question or "")
+    assert "跨学科方向" not in (question or "")
 
 
 def test_recommendation_does_not_run_when_scope_level_and_skills_lack_topic():

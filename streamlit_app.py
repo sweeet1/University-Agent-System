@@ -11,9 +11,12 @@ from app import (
     CHAT_WELCOME,
     _chat_result_text,
     _chat_standard_input,
+    _expand_recommendations_from_cache,
     _next_chat_question,
+    _profile_edit_followup_answer,
     _result_downloads,
     _semantic_followup_answer,
+    _should_hold_after_profile_edit,
     _update_chat_state,
     load_config,
     new_chat_state,
@@ -185,6 +188,8 @@ def initialize_session() -> None:
         st.session_state.last_status = "等待输入"
     if "downloads" not in st.session_state:
         st.session_state.downloads = []
+    if "pending_turn" not in st.session_state:
+        st.session_state.pending_turn = None
 
 
 def reset_conversation() -> None:
@@ -192,6 +197,121 @@ def reset_conversation() -> None:
     st.session_state.messages = [{"role": "assistant", "content": CHAT_WELCOME}]
     st.session_state.last_status = "等待输入"
     st.session_state.downloads = []
+    st.session_state.pending_turn = None
+
+
+def _dialogue_memory_snapshot(state: dict) -> dict:
+    """Fields shown in the sidebar '对话记忆' panel."""
+    return {
+        "intent": state.get("intent") or "",
+        "major": state.get("major") or "",
+        "grade": state.get("grade") or "",
+        "competition_type": state.get("competition_type") or "",
+        "competition_type_confirmed": bool(state.get("competition_type_confirmed")),
+        "competition_level": state.get("competition_level") or "",
+        "competition_level_confirmed": bool(state.get("competition_level_confirmed")),
+        "skills": list(state.get("skills") or []),
+        "skills_skipped": bool(state.get("skills_skipped")),
+    }
+
+
+def _sidebar_profile_value(
+    value: str | None,
+    *,
+    confirmed: bool = False,
+    skipped: bool = False,
+    open_label: str = "不限",
+) -> str:
+    """Render sidebar memory text.
+
+    - has value → show value
+    - confirmed/skipped empty → open_label（级别/方向用「不限」，技能用「暂无」）
+    - not yet answered → 待补充
+    """
+    text = str(value or "").strip()
+    if text:
+        return text
+    if confirmed or skipped:
+        return open_label
+    return "待补充"
+
+
+def _finish_conversation_turn(
+    prompt: str,
+    understanding: dict | None,
+    *,
+    allow_dispatch: bool = False,
+) -> None:
+    """Ask follow-up or dispatch agents after dialogue memory has been written."""
+    state = st.session_state.chat_state
+    semantic_answer = _semantic_followup_answer(state, understanding)
+    if semantic_answer:
+        st.session_state.messages.append({"role": "assistant", "content": semantic_answer})
+        st.session_state.last_status = "已结合上一轮结果回答"
+        return
+
+    expanded_answer = _expand_recommendations_from_cache(state, understanding)
+    if expanded_answer:
+        st.session_state.messages.append({"role": "assistant", "content": expanded_answer})
+        st.session_state.last_status = "已补充更多推荐"
+        return
+
+    question = _next_chat_question(state)
+    if question:
+        acknowledgement = str(state.get("last_acknowledgement", "")).strip()
+        if acknowledgement:
+            question = f"{acknowledgement}\n\n{question}"
+        st.session_state.messages.append({"role": "assistant", "content": question})
+        st.session_state.last_status = "正在补充信息"
+        return
+
+    edited_labels = _should_hold_after_profile_edit(state, understanding)
+    if edited_labels:
+        answer = _profile_edit_followup_answer(edited_labels)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.last_status = "已更新对话记忆"
+        return
+
+    # 调度 Agent 前再刷一次侧边栏，确保「不限」等状态先可见
+    if not allow_dispatch:
+        st.session_state.last_status = "信息已齐全，准备为你推荐"
+        st.session_state.pending_turn = {
+            "prompt": prompt,
+            "understanding": understanding,
+            "stage": "dispatch_agent",
+        }
+        st.rerun()
+
+    main_agent = MainAgent(config=load_config())
+    standard_input = _chat_standard_input(state, prompt)
+    with st.spinner("正在调度智能体，请稍候……"):
+        result = main_agent.run(standard_input)
+    state["last_result"] = result
+    st.session_state.chat_state = state
+    st.session_state.last_status = result.get("status", "failed")
+    st.session_state.downloads = _result_downloads(result)
+    answer = _chat_result_text(result)
+    if st.session_state.downloads:
+        answer += "\n\n材料文件已生成，可在右侧下载。提交前请人工复核。"
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+
+def continue_pending_turn() -> bool:
+    """Resume a turn after the sidebar has refreshed with updated dialogue memory.
+
+    Returns True when a pending turn was processed (caller should rerun).
+    """
+    pending = st.session_state.get("pending_turn")
+    if not pending:
+        return False
+    st.session_state.pending_turn = None
+    stage = str(pending.get("stage") or "respond")
+    _finish_conversation_turn(
+        pending["prompt"],
+        pending.get("understanding"),
+        allow_dispatch=(stage == "dispatch_agent"),
+    )
+    return True
 
 
 def run_conversation_turn(prompt: str) -> None:
@@ -221,6 +341,7 @@ def run_conversation_turn(prompt: str) -> None:
         st.session_state.last_status = followup.get("status", "success")
         return
 
+    before_memory = _dialogue_memory_snapshot(st.session_state.chat_state)
     with st.spinner("正在理解你的需求……"):
         understanding = main_agent.understand_conversation_turn(
             prompt, st.session_state.chat_state
@@ -231,31 +352,19 @@ def run_conversation_turn(prompt: str) -> None:
         understanding=understanding,
     )
     st.session_state.chat_state = state
-    semantic_answer = _semantic_followup_answer(state, understanding)
-    if semantic_answer:
-        st.session_state.messages.append({"role": "assistant", "content": semantic_answer})
-        st.session_state.last_status = "已结合上一轮结果回答"
-        return
-    question = _next_chat_question(state)
-    if question:
-        acknowledgement = str(state.get("last_acknowledgement", "")).strip()
-        if acknowledgement:
-            question = f"{acknowledgement}\n\n{question}"
-        st.session_state.messages.append({"role": "assistant", "content": question})
-        st.session_state.last_status = "正在补充信息"
-        return
+    after_memory = _dialogue_memory_snapshot(state)
 
-    standard_input = _chat_standard_input(state, prompt)
-    with st.spinner("正在调度智能体，请稍候……"):
-        result = main_agent.run(standard_input)
-    state["last_result"] = result
-    st.session_state.chat_state = state
-    st.session_state.last_status = result.get("status", "failed")
-    st.session_state.downloads = _result_downloads(result)
-    answer = _chat_result_text(result)
-    if st.session_state.downloads:
-        answer += "\n\n材料文件已生成，可在右侧下载。提交前请人工复核。"
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    # 对话记忆有变化时先刷新侧边栏，再追问或调度 Agent
+    if before_memory != after_memory:
+        st.session_state.last_status = "已更新对话记忆"
+        st.session_state.pending_turn = {
+            "prompt": prompt,
+            "understanding": understanding,
+            "stage": "respond",
+        }
+        st.rerun()
+
+    _finish_conversation_turn(prompt, understanding, allow_dispatch=False)
 
 
 load_cloud_secrets()
@@ -286,11 +395,23 @@ with st.sidebar:
     state = st.session_state.chat_state
     profile = {
         "目标": state.get("intent") or "待确认",
-        "专业": state.get("major") or "待补充",
-        "年级": state.get("grade") or "待补充",
-        "竞赛方向": state.get("competition_type") or "待补充",
-        "竞赛级别": state.get("competition_level") or "待补充",
-        "技能": "、".join(state.get("skills", [])) or "待补充",
+        "专业": _sidebar_profile_value(state.get("major")),
+        "年级": _sidebar_profile_value(state.get("grade")),
+        "竞赛方向": _sidebar_profile_value(
+            state.get("competition_type"),
+            confirmed=bool(state.get("competition_type_confirmed")),
+            open_label="不限",
+        ),
+        "竞赛级别": _sidebar_profile_value(
+            state.get("competition_level"),
+            confirmed=bool(state.get("competition_level_confirmed")),
+            open_label="不限",
+        ),
+        "技能": _sidebar_profile_value(
+            "、".join(state.get("skills", [])),
+            skipped=bool(state.get("skills_skipped")),
+            open_label="暂无",
+        ),
     }
     st.markdown('<div class="szt-side-label">对话记忆</div>', unsafe_allow_html=True)
     for label, value in profile.items():
@@ -331,7 +452,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if len(st.session_state.messages) == 1:
+if len(st.session_state.messages) == 1 and not st.session_state.get("pending_turn"):
     st.markdown(
         """
         <section class="szt-welcome">
@@ -362,6 +483,10 @@ for message in st.session_state.messages:
     avatar = "🧠" if message["role"] == "assistant" else "👤"
     with st.chat_message(message["role"], avatar=avatar):
         st.markdown(message["content"])
+
+# 侧边栏与已有消息先展示后，再继续追问 / 调度 Agent
+if continue_pending_turn():
+    st.rerun()
 
 if prompt := st.chat_input("向赛智通发送消息…"):
     st.session_state.messages.append({"role": "user", "content": prompt})

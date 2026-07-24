@@ -93,6 +93,29 @@ class RecommendationAgent:
                 continue
         return 3
 
+    @staticmethod
+    def _resolve_pool_size(
+        rules: dict, rec_cfg: Optional[dict] = None, top_n: int = 3
+    ) -> int:
+        """解析缓存池大小：至少覆盖 top_n，供后续「多推荐几条」复用，避免重跑打分。
+
+        优先级：rules.pool_size > config.recommendation_pool_size > 默认 10。
+        """
+        top_n = max(1, int(top_n))
+        candidates = []
+        if isinstance(rules, dict) and rules.get("pool_size") is not None:
+            candidates.append(rules.get("pool_size"))
+        cfg = rec_cfg if isinstance(rec_cfg, dict) else {}
+        if cfg.get("recommendation_pool_size") is not None:
+            candidates.append(cfg.get("recommendation_pool_size"))
+        candidates.append(10)
+        for raw in candidates:
+            try:
+                return max(top_n, int(raw))
+            except (TypeError, ValueError):
+                continue
+        return max(top_n, 10)
+
     # ------------------------------------------------------------------
     # 统一外部接口
     # ------------------------------------------------------------------
@@ -138,6 +161,7 @@ class RecommendationAgent:
         if not isinstance(rules, dict):
             rules = {}
         top_n = self._resolve_top_n(rules, self.rec_cfg)
+        selection_n = self._resolve_pool_size(rules, self.rec_cfg, top_n)
 
         weights = resolve_weights(self.weights, rules)
         caps = {
@@ -250,7 +274,7 @@ class RecommendationAgent:
         if semantic_meta.get("used"):
             scored = annotate_prestige_and_category(scored, prestige_settings)
             scored = sort_scored(scored, prestige_settings)
-        selected = select_diverse_top_n(scored, top_n, diversity_settings)
+        selected = select_diverse_top_n(scored, selection_n, diversity_settings)
 
         recommendations = []
         for entry in selected:
@@ -289,7 +313,7 @@ class RecommendationAgent:
             })
 
         recommendations = apply_quality_gate(recommendations, quality_gate)
-        # 质量门槛去掉备选后，再按分类去重（可少于 top_n）
+        # 质量门槛去掉备选后，再按分类去重（可少于 selection_n）
         max_per = 1
         try:
             max_per = max(1, int(diversity_settings.get("max_per_category", 1)))
@@ -304,13 +328,13 @@ class RecommendationAgent:
                     continue
                 deduped.append(rec)
                 cat_counts[key] = cat_counts.get(key, 0) + 1
-                if len(deduped) >= top_n:
+                if len(deduped) >= selection_n:
                     break
             recommendations = deduped
         else:
-            recommendations = recommendations[:top_n]
+            recommendations = recommendations[:selection_n]
 
-        # 最高优先级：最终强制凑满 top_n（可含备选 / 同类）
+        # 最高优先级：最终强制凑满 selection_n（可含备选 / 同类）
         force_top_n = True
         if isinstance(rules.get("force_top_n"), bool):
             force_top_n = rules["force_top_n"]
@@ -353,10 +377,10 @@ class RecommendationAgent:
 
         if force_top_n:
             recommendations = force_fill_recommendations(
-                recommendations, scored, top_n, _build_rec
+                recommendations, scored, selection_n, _build_rec
             )
         else:
-            recommendations = recommendations[:top_n]
+            recommendations = recommendations[:selection_n]
 
         for idx, rec in enumerate(recommendations, 1):
             rec["rank"] = idx
@@ -375,8 +399,13 @@ class RecommendationAgent:
             llm_copy_settings=llm_copy_settings,
         )
 
+        # 缓存完整候选池；对外只返回当前 top_n，扩容时直接切片复用
+        recommendation_pool = recommendations
+        recommendations = recommendation_pool[:top_n]
+
         data = {
             "recommendations": recommendations,
+            "recommendation_pool": recommendation_pool,
             "filtered_out": filtered_out,
             "total_count": len(structured_items),
             "matched_count": len(scored),

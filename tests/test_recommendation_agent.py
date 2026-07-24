@@ -121,6 +121,12 @@ def test_output_schema_and_sample() -> None:
         f"默认 Top3，实际条数: {len(recommendations)}",
     )
     _assert("filtered_out" in result["data"], "应返回 filtered_out")
+    pool = result["data"].get("recommendation_pool", [])
+    _assert(isinstance(pool, list), "recommendation_pool 必须是 list")
+    _assert(
+        len(pool) >= len(recommendations),
+        "recommendation_pool 应至少覆盖当前展示条数",
+    )
 
     for item in recommendations:
         missing_item = RECOMMENDATION_REQUIRED_KEYS - set(item.keys())

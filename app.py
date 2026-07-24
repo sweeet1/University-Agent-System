@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import html
 import json
 import os
@@ -496,6 +497,97 @@ def _recommendations_from_chat_state(state: dict[str, Any]) -> list[dict[str, An
     return []
 
 
+def _recommendation_pool_from_chat_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the scored recommendation cache pool from the last recommendation result."""
+    result = state.get("last_result", {})
+    if not isinstance(result, dict):
+        return []
+    for agent_result in result.get("data", {}).get("agent_results", []):
+        data = agent_result.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        pool = data.get("recommendation_pool")
+        if isinstance(pool, list) and pool:
+            return [item for item in pool if isinstance(item, dict)]
+    return []
+
+
+def _patch_recommendations_in_last_result(
+    state: dict[str, Any], recommendations: list[dict[str, Any]]
+) -> None:
+    """Update displayed recommendations in place without replacing the whole result tree."""
+    result = state.get("last_result")
+    if not isinstance(result, dict):
+        return
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return
+    for agent_result in data.get("agent_results", []) or []:
+        agent_data = agent_result.get("data")
+        if not isinstance(agent_data, dict):
+            continue
+        if "recommendations" not in agent_data and "recommendation_pool" not in agent_data:
+            continue
+        agent_data["recommendations"] = recommendations
+        if isinstance(data.get("integrated_data"), dict):
+            for integrated in data["integrated_data"].values():
+                if isinstance(integrated, dict) and "recommendations" in integrated:
+                    integrated["recommendations"] = recommendations
+        return
+
+
+def _expand_recommendations_from_cache(
+    state: dict[str, Any], understanding: dict[str, Any] | None
+) -> str | None:
+    """Widen top_n from the cached recommendation_pool without re-extracting or re-scoring.
+
+    Returns None when no pool is available so the caller can fall back to a full agent run.
+    """
+    if not understanding or not state.get("last_result"):
+        return None
+    action = str(understanding.get("dialogue_action") or state.get("dialogue_action") or "")
+    if action != "expand_recommendations":
+        return None
+
+    pool = _recommendation_pool_from_chat_state(state)
+    if not pool:
+        return None
+
+    options = state.get("recommendation_options") or {}
+    top_n = options.get("top_n", 5)
+    if not isinstance(top_n, int):
+        top_n = 5
+    top_n = max(1, min(10, top_n))
+
+    previous = _recommendations_from_chat_state(state)
+    expanded = []
+    for index, item in enumerate(pool[:top_n], 1):
+        rec = dict(item)
+        rec["rank"] = index
+        rec["id"] = f"rec_{index}"
+        expanded.append(rec)
+
+    if not expanded:
+        return None
+
+    _patch_recommendations_in_last_result(state, expanded)
+
+    if previous and len(expanded) <= len(previous):
+        prefix = (
+            f"目前已经给你看了 {len(expanded)} 条，暂时没有更多合适的了。"
+            "如果你愿意换个方向，或放宽级别、技能等条件，我可以再帮你重新找一批。"
+        )
+    else:
+        prefix = f"好的，我又多找了几条，现在一共给你看 {len(expanded)} 条。"
+        if len(expanded) < top_n:
+            prefix += f"按你现在的条件，比较合适的大概就这些。"
+
+    body = _chat_result_text(state.get("last_result", {}))
+    if "\n\n" in body and body.startswith("我结合你提供的背景"):
+        body = body.split("\n\n", 1)[-1]
+    return f"{prefix}\n\n{body}"
+
+
 def _detect_chat_intent(text: str, current_intent: str = "") -> str:
     """Classify task intent with transition keywords taking precedence."""
     if len(text) >= 80 and current_intent in {
@@ -605,6 +697,417 @@ def _looks_like_notification(text: str) -> bool:
     return any(re.search(indicator, text) for indicator in notification_indicators)
 
 
+def _profile_field_display_value(state: dict[str, Any], key: str) -> str:
+    """Comparable display value for detecting mid-conversation field edits."""
+    if key == "competition_level":
+        value = str(state.get("competition_level") or "").strip()
+        if value:
+            return value
+        return "不限" if state.get("competition_level_confirmed") else ""
+    if key == "competition_type":
+        value = str(state.get("competition_type") or "").strip()
+        if value:
+            return value
+        return "不限" if state.get("competition_type_confirmed") else ""
+    if key == "skills":
+        skills = state.get("skills") if isinstance(state.get("skills"), list) else []
+        if skills:
+            return "、".join(str(item) for item in skills)
+        return "暂无" if state.get("skills_skipped") else ""
+    if key == "team_preference":
+        return str(state.get("team_preference") or "").strip()
+    return str(state.get(key) or "").strip()
+
+
+_EDITABLE_PROFILE_FIELDS = (
+    ("major", "专业"),
+    ("grade", "年级"),
+    ("competition_type", "竞赛方向"),
+    ("competition_level", "竞赛级别"),
+    ("skills", "技能"),
+    ("team_preference", "参赛形式"),
+)
+
+
+def _detect_edited_profile_fields(
+    baseline: dict[str, Any], state: dict[str, Any]
+) -> list[str]:
+    """Return labels of profile fields that were changed after already being set."""
+    changed: list[str] = []
+    for key, label in _EDITABLE_PROFILE_FIELDS:
+        before = _profile_field_display_value(baseline, key)
+        if not before:
+            continue
+        after = _profile_field_display_value(state, key)
+        if before != after:
+            changed.append(label)
+    return changed
+
+
+def _looks_like_field_correction(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in ["改成", "更正", "换成", "改为", "应该是", "修正"]
+    ) or bool(re.search(r"不是.+?(?:，|,|；|;| )?.*?(?:是|改成)", text))
+
+
+def _rule_can_set_profile_field(
+    state: dict[str, Any],
+    key: str,
+    understanding: dict[str, Any] | None,
+    text: str = "",
+) -> bool:
+    """Lexicon fills empties; overwrites existing only offline or as correction fallback.
+
+    When LLM understanding is present, field edits are LLM-primary. Rules may still
+    draft a correction if the user used explicit correction phrasing, in case the
+    model omits the field; non-empty LLM values overwrite that draft afterward.
+    """
+    def _is_empty() -> bool:
+        if key == "competition_level":
+            return not (
+                str(state.get("competition_level") or "").strip()
+                or state.get("competition_level_confirmed")
+            )
+        if key == "competition_type":
+            return not str(state.get("competition_type") or "").strip()
+        if key == "skills":
+            skills = state.get("skills") if isinstance(state.get("skills"), list) else []
+            return not skills and not state.get("skills_skipped")
+        if key == "team_preference":
+            return not str(state.get("team_preference") or "").strip()
+        return not str(state.get(key) or "").strip()
+
+    # Skills stay LLM-only when understanding is present (skills_add/remove/status).
+    if key == "skills" and understanding is not None:
+        return False
+    if _is_empty():
+        return True
+    # competition_type: never let skill keywords overwrite an existing direction
+    # unless the user is clearly correcting, with or without LLM.
+    if key == "competition_type":
+        return _looks_like_field_correction(text) or any(
+            marker in text for marker in ["不是", "改成", "更正", "应该是", "换成", "改为"]
+        )
+    if understanding is None:
+        return True
+    return _looks_like_field_correction(text)
+
+
+def _profile_edit_followup_answer(changed_labels: list[str]) -> str:
+    if len(changed_labels) == 1:
+        head = f"好的，{changed_labels[0]}已经修改完成。"
+    else:
+        head = f"好的，已修改完成：{'、'.join(changed_labels)}。"
+    return (
+        f"{head}\n\n"
+        "这次不会立刻重新筛选。你接下来想做什么？"
+        "例如：按现在的条件重新推荐、在上一轮结果上多看几条、生成报名材料，或继续修改其他信息。"
+    )
+
+
+def _consume_edited_fields(state: dict[str, Any]) -> list[str]:
+    edited = state.pop("_edited_fields", None)
+    if isinstance(edited, list):
+        return [str(item) for item in edited if str(item).strip()]
+    return []
+
+
+def _should_hold_after_profile_edit(
+    state: dict[str, Any], understanding: dict[str, Any] | None
+) -> list[str]:
+    """If user edited existing fields, return labels and skip agent dispatch."""
+    edited = _consume_edited_fields(state)
+    if not edited:
+        return []
+    action = str(
+        (understanding or {}).get("dialogue_action")
+        or state.get("dialogue_action")
+        or ""
+    ).strip()
+    if action in {
+        "new_recommendation",
+        "expand_recommendations",
+        "generate_material",
+        "competition_detail",
+        "compare_recommendations",
+    }:
+        return []
+    return edited
+
+
+def _keyword_in_major_context(text: str, keyword: str) -> bool:
+    """True when the keyword is used as an academic major, not a competition topic."""
+    escaped = re.escape(keyword)
+    return bool(
+        re.search(
+            rf"{escaped}\s*专业|"
+            rf"(?:我是|我读|就读于?|学的是?|读的是?)\s*{escaped}"
+            rf"(?!\s*(?:相关)?(?:的)?(?:竞赛|比赛|项目|方向|方面))",
+            text,
+        )
+    )
+
+
+def _keyword_in_competition_context(text: str, keyword: str) -> bool:
+    """True when the keyword is framed as the competition direction/topic."""
+    escaped = re.escape(keyword)
+    return bool(
+        re.search(
+            rf"(?:想参加|想找|报名|感兴趣|参加|找|做|搞).{{0,16}}{escaped}|"
+            rf"{escaped}.{{0,12}}(?:方面|方向)?(?:的)?(?:竞赛|比赛|项目)",
+            text,
+        )
+    )
+
+
+_PROFILE_ISOLATION_KEYS = (
+    "major",
+    "grade",
+    "competition_type",
+    "competition_type_confirmed",
+    "competition_level",
+    "competition_level_confirmed",
+    "competition_scope",
+    "skills",
+    "skills_skipped",
+    "skill_gaps",
+    "interests",
+    "team_preference",
+    "preferred_levels",
+    "acceptable_levels",
+    "excluded_levels",
+    "excluded_competition_types",
+    "development_goals",
+    "available_time_per_week",
+)
+
+_SOFT_TARGET_KEYS = {
+    "competition_type": {
+        "competition_type",
+        "competition_type_confirmed",
+        "competition_scope",
+        "excluded_competition_types",
+        "interests",
+    },
+    "competition_level": {
+        "competition_level",
+        "competition_level_confirmed",
+        "preferred_levels",
+        "acceptable_levels",
+        "excluded_levels",
+    },
+    "skills": {
+        "skills",
+        "skills_skipped",
+        "skill_gaps",
+    },
+    "major": {"major"},
+    "grade": {"grade"},
+    "team_preference": {"team_preference"},
+    "development_goals": {"development_goals"},
+    "available_time_per_week": {"available_time_per_week"},
+}
+
+
+def _profile_isolation_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: copy.deepcopy(state.get(key)) for key in _PROFILE_ISOLATION_KEYS}
+
+
+def _pending_soft_preference_fields(state: dict[str, Any]) -> set[str]:
+    """Fields that may accept「无偏好」answers in the current question turn."""
+    if state.get("intent") not in {"recommendation", "full_process"}:
+        return set()
+    pending: set[str] = set()
+    if not state.get("competition_type_confirmed"):
+        pending.add("competition_type")
+    if not state.get("competition_level_confirmed"):
+        pending.add("competition_level")
+    if (
+        state.get("competition_type_confirmed")
+        and state.get("competition_level_confirmed")
+        and not state.get("skills")
+        and not state.get("skills_skipped")
+    ):
+        pending.add("skills")
+    return pending
+
+
+def _direction_skip_attempt(text: str) -> bool:
+    """User left competition direction unspecified / open."""
+    return any(
+        phrase in text
+        for phrase in [
+            "方向没有偏好", "方向都可以", "不限方向", "方向不限", "什么方向都行",
+            "方向无所谓", "方向随便", "没有方向要求", "方向没什么要求",
+        ]
+    )
+
+
+def _explicit_soft_preference_fields(text: str) -> set[str]:
+    """Soft-preference phrases that name a field explicitly."""
+    fields: set[str] = set()
+    if _direction_skip_attempt(text):
+        fields.add("competition_type")
+    if any(
+        phrase in text
+        for phrase in [
+            "级别都可以", "不限级别", "级别不限", "什么级别都行", "级别无所谓",
+            "级别没有偏好", "级别随便",
+        ]
+    ):
+        fields.add("competition_level")
+    if any(
+        phrase in text
+        for phrase in [
+            "暂时没有技能", "没有特别擅长", "还不清楚擅长", "不知道擅长", "没什么技能",
+            "不清楚自己擅长", "暂时不清楚", "还不知道自己会什么",
+            "没有什么很擅长", "没什么很擅长", "没有很擅长",
+            "没什么擅长的", "没什么擅长", "没有擅长的", "不太擅长什么",
+            "没有什么擅长", "谈不上擅长",
+        ]
+    ):
+        fields.add("skills")
+    return fields
+
+
+def _ambiguous_soft_preference(text: str) -> bool:
+    """Answers like「没什么硬性要求」that must bind to the pending question field."""
+    if _direction_skip_attempt(text):
+        return False
+    return any(
+        phrase in text
+        for phrase in [
+            "没有硬性要求", "没什么硬性要求", "没有偏好", "没什么偏好",
+            "都可以", "都行", "随便", "无所谓", "没有要求", "没什么要求",
+        ]
+    )
+
+
+def _resolve_soft_preference_targets(text: str, baseline: dict[str, Any]) -> set[str]:
+    targets = _explicit_soft_preference_fields(text)
+    if targets:
+        # 「级别都可以」等明确话术只改对应字段，不扩散到其它待填项
+        return targets
+    if _ambiguous_soft_preference(text):
+        pending = _pending_soft_preference_fields(baseline)
+        if pending:
+            return pending
+        if "硬性要求" in text or "级别" in text:
+            return {"competition_level"}
+        if any(word in text for word in ["擅长", "技能"]):
+            return {"skills"}
+        if "方向" in text:
+            return {"competition_type"}
+    return set()
+
+
+def _fields_grounded_in_text(text: str) -> set[str]:
+    """Profile fields explicitly grounded in this user utterance (not soft-preference)."""
+    grounded: set[str] = set()
+    major_aliases = [
+        "计算机科学与技术", "计科", "计算机", "软件工程", "软工", "软件", "人工智能",
+        "数据科学", "电子信息", "自动化", "金融", "工商管理", "网络工程", "电子商务",
+        "市场营销", "通信工程", "机械工程", "数学",
+    ]
+    for keyword in major_aliases:
+        if keyword in text and (
+            any(marker in text for marker in ["专业", "学生", "我是", "学的"])
+            or re.search(
+                rf"(?:大[一二三四]|研[一二三]|研究生)\s*{re.escape(keyword)}|"
+                rf"{re.escape(keyword)}\s*(?:专业|大[一二三四]|研[一二三]|研究生|20\d{{2}}级)",
+                text,
+            )
+            or text.strip() in {keyword, f"{keyword}专业"}
+        ):
+            grounded.add("major")
+            break
+
+    if any(g in text for g in ["大一", "大二", "大三", "大四", "研究生", "研一", "研二", "研三", "硕士", "博士"]) or re.search(
+        r"20\d{2}\s*级", text
+    ):
+        grounded.add("grade")
+
+    if any(level in text for level in ["国际级", "国家级", "省级", "校级"]):
+        grounded.add("competition_level")
+
+    type_keywords = [
+        "人工智能", "AI", "算法", "程序设计", "创新创业", "创业", "科研", "数据分析",
+        "数据挖掘", "机器学习", "深度学习", "数学建模", "营销策划", "市场营销",
+        "控制类", "电子设计", "机器人", "后端开发",
+    ]
+    for keyword in type_keywords:
+        if keyword in text and (
+            _keyword_in_competition_context(text, keyword)
+            or (not _keyword_in_major_context(text, keyword) and any(
+                marker in text for marker in ["竞赛", "比赛", "方向", "想参加", "想找"]
+            ))
+        ):
+            grounded.add("competition_type")
+            break
+
+    known_skills = [
+        "Python", "Java", "C++", "PyTorch", "SQL", "MATLAB", "Go", "Linux",
+        "机器学习", "深度学习", "数据分析", "文案写作", "团队协作",
+    ]
+    if any(skill.lower() in text.lower() for skill in known_skills):
+        grounded.add("skills")
+
+    if any(phrase in text for phrase in ["个人赛", "团队赛", "组队", "不要组队", "不想组队"]):
+        grounded.add("team_preference")
+    if any(word in text for word in ["保研", "推免", "考研", "留学", "就业", "找工作", "创业"]):
+        grounded.add("development_goals")
+    if re.search(r"每周(?:大概|大约|能|可以|可)?\s*\d+(?:\.\d+)?\s*(?:个)?小时", text):
+        grounded.add("available_time_per_week")
+    return grounded
+
+
+def _allowed_keys_for_targets(targets: set[str]) -> set[str]:
+    allowed: set[str] = set()
+    for target in targets:
+        allowed.update(_SOFT_TARGET_KEYS.get(target, {target}))
+    return allowed
+
+
+def _mark_skills_unspecified(state: dict[str, Any]) -> None:
+    """Record that the user has no special skills to declare."""
+    state["skills"] = ["暂无"]
+    state["skills_skipped"] = True
+
+
+def _apply_soft_preference_effects(state: dict[str, Any], targets: set[str]) -> dict[str, Any]:
+    if "competition_type" in targets:
+        state["competition_type"] = ""
+        state["competition_type_confirmed"] = True
+    if "competition_level" in targets:
+        state["competition_level"] = ""
+        state["competition_level_confirmed"] = True
+    if "skills" in targets:
+        _mark_skills_unspecified(state)
+    return state
+
+
+def _enforce_profile_field_isolation(
+    state: dict[str, Any],
+    baseline: dict[str, Any],
+    text: str,
+    soft_targets: set[str],
+) -> dict[str, Any]:
+    """Prevent answers about one field from mutating unrelated profile fields."""
+    if not soft_targets and not _ambiguous_soft_preference(text) and not _explicit_soft_preference_fields(text):
+        return state
+
+    allowed = _allowed_keys_for_targets(soft_targets) | _allowed_keys_for_targets(
+        _fields_grounded_in_text(text)
+    )
+    # Soft-preference turns should not invent unrelated entity changes via LLM noise.
+    for key in _PROFILE_ISOLATION_KEYS:
+        if key not in allowed:
+            state[key] = copy.deepcopy(baseline.get(key))
+
+    return _apply_soft_preference_effects(state, soft_targets)
+
+
 def _looks_like_complete_notification(text: str) -> bool:
     """Require enough notice structure to distinguish pasted input from a short request."""
     if not _looks_like_notification(text):
@@ -632,6 +1135,7 @@ def _update_chat_state(
 ) -> dict[str, Any]:
     state = {**new_chat_state(), **(state or {})}
     previous_major = str(state.get("major") or "").strip()
+    baseline = _profile_isolation_snapshot(state)
     previous_intent = str(state.get("intent") or "").strip()
     text = clean_text(message)
     is_notification = _looks_like_complete_notification(text)
@@ -647,6 +1151,7 @@ def _update_chat_state(
         ]
     }
     fact_text = _correction_value_text(text)
+    soft_targets = _resolve_soft_preference_targets(fact_text, state)
     state["turns"] = [*state.get("turns", []), text][-8:]
     state["last_acknowledgement"] = ""
 
@@ -664,53 +1169,58 @@ def _update_chat_state(
         "网络工程": "网络工程", "电子商务": "电子商务", "市场营销": "市场营销",
         "通信工程": "通信工程", "机械工程": "机械工程", "数学": "数学类",
     }
-    for keyword, normalized in major_aliases.items():
-        short_major_answer = fact_text.strip() in {keyword, f"{keyword}专业"}
-        grade_near_major = re.search(
-            rf"(?:大[一二三四]|研[一二三]|研究生)\s*{re.escape(keyword)}|"
-            rf"{re.escape(keyword)}\s*(?:专业|大[一二三四]|研[一二三]|研究生|20\d{{2}}级)",
-            fact_text,
-        )
-        if keyword in fact_text and (
-            any(marker in fact_text for marker in ["专业", "学生", "我是", "学的"])
-            or grade_near_major
-            or short_major_answer
-        ):
-            state["major"] = normalized
-            break
+    if _rule_can_set_profile_field(state, "major", understanding, fact_text):
+        for keyword, normalized in major_aliases.items():
+            short_major_answer = fact_text.strip() in {keyword, f"{keyword}专业"}
+            grade_near_major = re.search(
+                rf"(?:大[一二三四]|研[一二三]|研究生)\s*{re.escape(keyword)}|"
+                rf"{re.escape(keyword)}\s*(?:专业|大[一二三四]|研[一二三]|研究生|20\d{{2}}级)",
+                fact_text,
+            )
+            if keyword in fact_text and (
+                any(marker in fact_text for marker in ["专业", "学生", "我是", "学的"])
+                or grade_near_major
+                or short_major_answer
+            ):
+                state["major"] = normalized
+                break
 
-    research_grade_map = {
-        "研一": "研究生", "研二": "研究生", "研三": "研究生",
-        "硕士": "研究生", "博士": "研究生",
-    }
-    for marker, normalized in research_grade_map.items():
-        if marker in fact_text:
-            state["grade"] = normalized
-            break
-    for grade in ["大一", "大二", "大三", "大四", "研究生"]:
-        if grade in fact_text:
-            state["grade"] = grade
-            break
+    if _rule_can_set_profile_field(state, "grade", understanding, fact_text):
+        research_grade_map = {
+            "研一": "研究生", "研二": "研究生", "研三": "研究生",
+            "硕士": "研究生", "博士": "研究生",
+        }
+        for marker, normalized in research_grade_map.items():
+            if marker in fact_text:
+                state["grade"] = normalized
+                break
+        for grade in ["大一", "大二", "大三", "大四", "研究生"]:
+            if grade in fact_text:
+                state["grade"] = grade
+                break
 
-    enrollment_match = re.search(r"(20\d{2})\s*级", fact_text)
-    if enrollment_match and not state.get("grade"):
-        year_index = max(1, date.today().year - int(enrollment_match.group(1)))
-        state["grade"] = {1: "大一", 2: "大二", 3: "大三"}.get(year_index, "大四")
+        enrollment_match = re.search(r"(20\d{2})\s*级", fact_text)
+        if enrollment_match and not state.get("grade"):
+            year_index = max(1, date.today().year - int(enrollment_match.group(1)))
+            state["grade"] = {1: "大一", 2: "大二", 3: "大三"}.get(year_index, "大四")
 
-    for level in ["国际级", "国家级", "省级", "校级"]:
-        if level in fact_text:
-            state["competition_level"] = level
-            state["competition_level_confirmed"] = True
-            state["preferred_levels"] = _append_unique(state.get("preferred_levels", []), level)
-            break
+    if _rule_can_set_profile_field(state, "competition_level", understanding, fact_text):
+        for level in ["国际级", "国家级", "省级", "校级"]:
+            if level in fact_text:
+                state["competition_level"] = level
+                state["competition_level_confirmed"] = True
+                state["preferred_levels"] = _append_unique(state.get("preferred_levels", []), level)
+                break
 
     for level in ["国际级", "国家级", "省级", "校级"]:
         if _contains_negated_term(fact_text, level):
             state["excluded_levels"] = _append_unique(state.get("excluded_levels", []), level)
             state["preferred_levels"] = [item for item in state.get("preferred_levels", []) if item != level]
-    if any(phrase in fact_text for phrase in [
-        "没有硬性要求", "级别都可以", "不限级别", "级别不限", "什么级别都行", "级别无所谓",
-    ]):
+
+    # Soft preference clears only the resolved target fields
+    if "competition_level" in soft_targets and not any(
+        level in fact_text for level in ["国际级", "国家级", "省级", "校级"]
+    ):
         state["competition_level"] = ""
         state["competition_level_confirmed"] = True
 
@@ -722,29 +1232,35 @@ def _update_chat_state(
         "营销策划": "商业与营销", "市场营销": "商业与营销", "控制类": "自动化与控制",
         "电子设计": "电子设计", "机器人": "机器人", "后端开发": "软件开发",
     }
-    # Only set competition_type from type_aliases when it hasn't been set yet,
-    # or when the user is explicitly correcting it.  This prevents a skill
-    # keyword like "数据分析" or "算法" from overwriting the competition
-    # direction the user stated earlier (e.g. "人工智能").
-    if not state.get("competition_type") or any(
-        marker in fact_text for marker in ["不是", "改成", "更正", "应该是", "换成", "改为"]
-    ):
+    # 有 LLM：词库只补空，或在明确纠错措辞下打草稿（最终由 LLM 非空值覆盖）
+    # 无 LLM：允许词库补空与纠错回退
+    if _rule_can_set_profile_field(state, "competition_type", understanding, fact_text):
+        type_candidates: list[tuple[int, int, str, str]] = []
         for keyword, normalized in type_aliases.items():
-            if keyword in fact_text:
-                if _contains_negated_term(fact_text, keyword):
-                    state["excluded_competition_types"] = _append_unique(
-                        state.get("excluded_competition_types", []), normalized
-                    )
-                    continue
-                state["competition_type"] = normalized
-                state["competition_type_confirmed"] = True
-                if normalized not in state["interests"]:
-                    state["interests"] = [*state["interests"], normalized]
-                break
+            if keyword not in fact_text:
+                continue
+            if _contains_negated_term(fact_text, keyword):
+                state["excluded_competition_types"] = _append_unique(
+                    state.get("excluded_competition_types", []), normalized
+                )
+                continue
+            # 「人工智能专业」只是专业，不能抢在「数学建模方面的竞赛」前面写成竞赛方向
+            in_major = _keyword_in_major_context(fact_text, keyword)
+            in_competition = _keyword_in_competition_context(fact_text, keyword)
+            if in_major and not in_competition:
+                continue
+            score = 2 if in_competition else 1
+            type_candidates.append((score, len(keyword), keyword, normalized))
+        if type_candidates:
+            type_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            _, _, _, normalized = type_candidates[0]
+            state["competition_type"] = normalized
+            state["competition_type_confirmed"] = True
+            if normalized not in state["interests"]:
+                state["interests"] = [*state["interests"], normalized]
 
-    if any(phrase in fact_text for phrase in [
-        "方向没有偏好", "方向都可以", "不限方向", "方向不限", "什么方向都行",
-    ]):
+    # 竞赛方向可「不限」：用户说方向随便时确认为空偏好，不再追问
+    if _direction_skip_attempt(fact_text) and "competition_type" in soft_targets:
         state["competition_type"] = ""
         state["competition_type_confirmed"] = True
 
@@ -752,23 +1268,19 @@ def _update_chat_state(
         "Python", "Java", "C++", "PyTorch", "SQL", "MATLAB", "Go", "Linux",
         "机器学习", "深度学习", "数据分析", "文案写作", "团队协作",
     ]
-    for skill in known_skills:
-        if skill.lower() not in fact_text.lower():
-            continue
-        if _contains_negated_term(fact_text, skill):
-            state["skill_gaps"] = _append_unique(state.get("skill_gaps", []), skill)
-            state["skills"] = [item for item in state["skills"] if item != skill]
-        elif skill not in state["skills"]:
-            state["skills"] = [*state["skills"], skill]
+    # 有 LLM 理解时技能以 skills_add/remove/status 为准，避免词库误加
+    if _rule_can_set_profile_field(state, "skills", understanding, fact_text):
+        for skill in known_skills:
+            if skill.lower() not in fact_text.lower():
+                continue
+            if _contains_negated_term(fact_text, skill):
+                state["skill_gaps"] = _append_unique(state.get("skill_gaps", []), skill)
+                state["skills"] = [item for item in state["skills"] if item != skill]
+            elif skill not in state["skills"]:
+                state["skills"] = [*state["skills"], skill]
 
-    if state.get("intent") in {"recommendation", "full_process"} and any(
-        phrase in fact_text
-        for phrase in [
-            "暂时没有技能", "没有特别擅长", "还不清楚擅长", "不知道擅长", "没什么技能",
-            "不清楚自己擅长", "暂时不清楚", "还不知道自己会什么",
-        ]
-    ):
-        state["skills_skipped"] = True
+    if "skills" in soft_targets and state.get("intent") in {"recommendation", "full_process"}:
+        _mark_skills_unspecified(state)
 
     goal_aliases = {
         "保研": "保研", "推免": "保研", "考研": "考研", "留学": "留学",
@@ -782,10 +1294,11 @@ def _update_chat_state(
     if time_match:
         state["available_time_per_week"] = float(time_match.group(1))
 
-    if any(phrase in fact_text for phrase in ["最好个人赛", "偏好个人赛", "想参加个人赛", "不要组队", "不想组队"]):
-        state["team_preference"] = "个人赛"
-    elif any(phrase in fact_text for phrase in ["团队赛", "组队参加", "想组队", "有团队"]):
-        state["team_preference"] = "团队赛"
+    if _rule_can_set_profile_field(state, "team_preference", understanding, fact_text):
+        if any(phrase in fact_text for phrase in ["最好个人赛", "偏好个人赛", "想参加个人赛", "不要组队", "不想组队"]):
+            state["team_preference"] = "个人赛"
+        elif any(phrase in fact_text for phrase in ["团队赛", "组队参加", "想组队", "有团队"]):
+            state["team_preference"] = "团队赛"
 
     if is_notification:
         state["notification_text"] = text
@@ -807,8 +1320,12 @@ def _update_chat_state(
         if keyword in fact_text:
             state["material_type"] = material_type
             break
+
     if understanding:
-        state = _apply_turn_understanding(state, understanding)
+        state = _apply_turn_understanding(state, understanding, soft_targets=soft_targets)
+
+    state = _enforce_profile_field_isolation(state, baseline, fact_text, soft_targets)
+
     if is_notification:
         state.update(protected_profile)
         state["input_role"] = "competition_notice"
@@ -821,12 +1338,41 @@ def _update_chat_state(
     current_major = str(state.get("major") or "").strip()
     if previous_major and current_major and previous_major != current_major:
         state = _reset_profile_dependent_state(state, current_major)
+
+    edited_fields = _detect_edited_profile_fields(baseline, state)
+    action = str(state.get("dialogue_action") or "").strip()
+    if understanding:
+        action = str(understanding.get("dialogue_action") or action).strip()
+    if edited_fields and action not in {
+        "new_recommendation",
+        "expand_recommendations",
+        "generate_material",
+    }:
+        # 已有字段被改动：标记后由对话层确认，避免立刻重跑 Agent
+        state["_edited_fields"] = edited_fields
+    else:
+        state.pop("_edited_fields", None)
+
     state["conversation_summary"] = _build_conversation_summary(state)
     return state
 
 
-def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, Any]) -> dict[str, Any]:
-    """Merge a validated LLM turn interpretation without replacing deterministic safeguards."""
+def _apply_turn_understanding(
+    state: dict[str, Any],
+    understanding: dict[str, Any],
+    soft_targets: set[str] | None = None,
+) -> dict[str, Any]:
+    """Merge LLM turn interpretation.
+
+    Profile fields are LLM-primary when understanding is present: non-empty LLM
+    value means "mentioned this turn" and overwrites rule drafts or prior state.
+    Empty LLM value means "not mentioned" — leave existing state unchanged.
+    Lexicon rules only fill empties (or act as offline fallback without LLM).
+    When soft_targets is provided (including empty), only those fields accept
+    no_preference clears; None keeps legacy permissive level/skills behavior.
+    """
+    restrict_soft = soft_targets is not None
+    allowed_soft = soft_targets or set()
     input_role = str(understanding.get("input_role") or "").strip()
     if input_role in {
         "user_profile", "competition_notice", "project_description",
@@ -870,28 +1416,46 @@ def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, An
 
     corrected_fields = understanding.get("corrected_fields", [])
     corrected_fields = corrected_fields if isinstance(corrected_fields, list) else []
-    for key in ["major", "grade", "competition_type", "competition_level", "team_preference"]:
+
+    # LLM-primary profile fields: non-empty overwrites rule draft / prior value
+    for key in ["major", "competition_type", "grade", "competition_level", "team_preference"]:
         value = str(understanding.get(key) or "").strip()
-        if value and (
-            not state.get(key)
-            or key in corrected_fields
-            or (key == "major" and dialogue_action == "profile_change")
-        ):
+        if value:
             state[key] = value
+            if key == "competition_type":
+                state["competition_type_confirmed"] = True
+            if key == "competition_level":
+                state["competition_level_confirmed"] = True
+            if key not in corrected_fields and dialogue_action in {
+                "change_preferences",
+                "profile_change",
+            }:
+                # Keep edit detection / callers aligned when model omits the list
+                corrected_fields = [*corrected_fields, key]
+
+    level_status = str(understanding.get("competition_level_status") or "").strip()
+    type_status = str(understanding.get("competition_type_status") or "").strip()
+    skills_status = str(understanding.get("skills_status") or "").strip()
 
     scope = str(understanding.get("competition_scope") or "").strip()
     if scope in {"major_aligned", "cross_disciplinary", "both"}:
         state["competition_scope"] = scope
 
-    type_status = str(understanding.get("competition_type_status") or "").strip()
+    # 级别/方向/技能仅在 soft_targets 允许时生效
+    # soft_targets is None：兼容直接调用，允许级别/技能/方向 no_preference
     if type_status == "no_preference":
-        state["competition_type"] = ""
-        state["competition_type_confirmed"] = True
+        if not restrict_soft or "competition_type" in allowed_soft:
+            state["competition_type"] = ""
+            state["competition_type_confirmed"] = True
+        elif not str(state.get("competition_type") or "").strip():
+            # 尚无具体方向时，接受 LLM 的开放偏好，不再追问
+            state["competition_type_confirmed"] = True
     elif state.get("competition_type"):
         state["competition_type_confirmed"] = True
 
-    level_status = str(understanding.get("competition_level_status") or "").strip()
-    if level_status == "no_preference":
+    if level_status == "no_preference" and (
+        not restrict_soft or "competition_level" in allowed_soft
+    ):
         state["competition_level"] = ""
         state["competition_level_confirmed"] = True
     elif state.get("competition_level"):
@@ -918,8 +1482,24 @@ def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, An
     for skill in understanding.get("skills_remove", []) if isinstance(understanding.get("skills_remove"), list) else []:
         state["skills"] = [item for item in state.get("skills", []) if item.lower() != str(skill).lower()]
 
-    if understanding.get("skills_status") == "no_preference":
-        state["skills_skipped"] = True
+    skills_add = understanding.get("skills_add", [])
+    has_skills_add = isinstance(skills_add, list) and any(str(v or "").strip() for v in skills_add)
+    if skills_status == "provided" or has_skills_add:
+        state["skills_skipped"] = False
+        state["skills"] = [
+            item for item in (state.get("skills") or [])
+            if str(item).strip() and str(item).strip() != "暂无"
+        ]
+        if "skills" not in corrected_fields and dialogue_action in {
+            "change_preferences",
+            "profile_change",
+        }:
+            corrected_fields = [*corrected_fields, "skills"]
+
+    if skills_status == "no_preference" and (
+        not restrict_soft or "skills" in allowed_soft
+    ):
+        _mark_skills_unspecified(state)
 
     time_value = understanding.get("available_time_per_week")
     if isinstance(time_value, (int, float)) and time_value >= 0:
@@ -930,6 +1510,13 @@ def _apply_turn_understanding(state: dict[str, Any], understanding: dict[str, An
         state["last_acknowledgement"] = acknowledgement[:180]
     return state
 
+
+def _looks_like_level_soft_preference(text: str) -> bool:
+    """Backward-compatible helper for tests and call sites."""
+    return "competition_level" in _explicit_soft_preference_fields(text) or any(
+        phrase in text
+        for phrase in ["没有硬性要求", "没什么硬性要求"]
+    )
 
 def _reset_profile_dependent_state(state: dict[str, Any], major: str) -> dict[str, Any]:
     """Start a fresh recommendation context when the user's academic identity changes."""
@@ -957,10 +1544,18 @@ def _build_conversation_summary(state: dict[str, Any]) -> str:
         ("competition_level", "级别"), ("team_preference", "参赛形式"),
         ("project_name", "当前竞赛"), ("material_type", "材料类型"),
     ]
+    open_preference_labels = {
+        "competition_type": ("competition_type_confirmed", "不限"),
+        "competition_level": ("competition_level_confirmed", "不限"),
+    }
     for key, label in labels:
         value = state.get(key)
         if value:
             facts.append(f"{label}：{value}")
+            continue
+        flag_and_text = open_preference_labels.get(key)
+        if flag_and_text and state.get(flag_and_text[0]):
+            facts.append(f"{label}：{flag_and_text[1]}")
     list_labels = [
         ("skills", "技能"), ("skill_gaps", "不擅长"),
         ("development_goals", "发展目标"), ("excluded_levels", "排除级别"),
@@ -970,6 +1565,8 @@ def _build_conversation_summary(state: dict[str, Any]) -> str:
         values = state.get(key)
         if isinstance(values, list) and values:
             facts.append(f"{label}：{'、'.join(str(value) for value in values[:8])}")
+    if not state.get("skills") and state.get("skills_skipped"):
+        facts.append("技能：暂无")
     if state.get("available_time_per_week") is not None:
         facts.append(f"每周可投入：{state['available_time_per_week']}小时")
     return "；".join(facts)
@@ -1028,17 +1625,19 @@ def _next_chat_question(state: dict[str, Any]) -> str | None:
         if not state.get("competition_type_confirmed") and not state.get("competition_level_confirmed"):
             major = state.get("major") or "你目前的专业"
             return (
-                f"我们按{major}重新看。你对哪个方向更感兴趣，希望比赛贴近本专业，还是也接受跨学科方向？"
-                "感兴趣的主题和期望的竞赛级别都可以用自己的话告诉我；暂时没偏好也没关系。"
+                f"我们按{major}重新看。可以先说说感兴趣的竞赛方向，例如人工智能、数学建模、算法或创新创业；"
+                "同时也可以说说期望的竞赛级别。方向或级别没有硬性要求的话直接告诉我就行。"
             )
-        if not state.get("competition_type_confirmed"):
-            return "竞赛级别我记下了。你更想尝试什么主题或方向？直接用自己的话描述就可以。"
+        # 不再单独追问竞赛方向：用户未答则按已有信息继续，方向视为可后续补充
         if not state.get("competition_level_confirmed"):
-            return "方向已经清楚了。你更倾向校级、省级、国家级还是国际级？如果没有硬性要求，也可以告诉我。"
+            return (
+                "你更倾向校级、省级、国家级还是国际级？"
+                "如果没有硬性要求，也可以告诉我。"
+            )
         if not state.get("skills") and not state.get("skills_skipped"):
             return (
                 "为了把结果排得更贴合，你目前有哪些比较熟悉的技能、知识、工具、项目经历或其他优势？"
-                "不一定是编程技能，按真实情况简单说就行；暂时没有特别擅长的也没关系。"
+                "不一定是编程技能，按真实情况简单说就行；没什么擅长的也可以直接说。"
             )
     if state["intent"] in {"material", "full_process"}:
         recommendations = _recommendations_from_chat_state(state)
@@ -1230,11 +1829,24 @@ def chat_submit(message, history, state):
     if semantic_answer:
         history.append({"role": "assistant", "content": semantic_answer})
         return "", history, state, build_status_html("success"), semantic_answer, [], {}, _result_downloads(state.get("last_result", {}))
+    expanded_answer = _expand_recommendations_from_cache(state, understanding)
+    if expanded_answer:
+        history.append({"role": "assistant", "content": expanded_answer})
+        return "", history, state, build_status_html("success", "已补充更多推荐"), expanded_answer, [], state.get("last_result", {}), _result_downloads(state.get("last_result", {}))
     question = _next_chat_question(state)
     if question:
+        acknowledgement = str(state.get("last_acknowledgement", "")).strip()
+        if acknowledgement:
+            question = f"{acknowledgement}\n\n{question}"
         history.append({"role": "assistant", "content": question})
-        snapshot = {key: value for key, value in state.items() if key not in {"last_result", "turns"}}
+        snapshot = {key: value for key, value in state.items() if key not in {"last_result", "turns", "_edited_fields"}}
         return "", history, state, build_status_html("need_input", question), f"**已记录信息**\n\n```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```", [], snapshot, []
+
+    edited_labels = _should_hold_after_profile_edit(state, understanding)
+    if edited_labels:
+        answer = _profile_edit_followup_answer(edited_labels)
+        history.append({"role": "assistant", "content": answer})
+        return "", history, state, build_status_html("success", "已更新对话记忆"), answer, [], {}, _result_downloads(state.get("last_result", {}))
 
     standard_input = _chat_standard_input(state, message)
     result = MainAgent(config=load_config()).run(standard_input)
