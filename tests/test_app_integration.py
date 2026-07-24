@@ -193,6 +193,157 @@ def test_chat_material_request_reuses_previous_recommendation():
     assert standard_input["input_data"]["project_info"]["project_name"] == "全国大学生人工智能竞赛"
 
 
+def test_pasted_notice_cannot_overwrite_profile_or_material_intent():
+    state = {
+        **new_chat_state(),
+        "intent": "material",
+        "major": "人工智能",
+        "grade": "大三",
+        "skills": ["Python"],
+        "material_type": "generic_application_form",
+    }
+    notice = (
+        "关于举办2026年挑战杯校内选拔赛的通知。主办单位：学校创新创业学院。"
+        "参赛对象为全日制在校本科生和研究生。新一代信息技术赛道包括人工智能、"
+        "基础软件、网络安全等领域。报名截止时间：2026年5月20日。"
+        "申报材料包括项目申报书、团队信息表和证明材料。"
+    )
+    state = _update_chat_state(state, notice, understanding={
+        "input_role": "competition_notice",
+        "intent": "recommendation",
+        "dialogue_action": "profile_change",
+        "major": "软件工程",
+        "grade": "研究生",
+        "skills_add": ["网络安全"],
+        "corrected_fields": ["major", "grade"],
+        "acknowledgement": "明白了，按软件工程专业重新梳理。",
+    })
+
+    assert state["input_role"] == "competition_notice"
+    assert state["intent"] == "material"
+    assert state["major"] == "人工智能"
+    assert state["grade"] == "大三"
+    assert state["skills"] == ["Python"]
+    assert state["notification_text"] == notice
+    assert state["dialogue_action"] == "continue"
+    assert "竞赛通知处理" in state["last_acknowledgement"]
+
+    request = _chat_standard_input(state, notice)
+    assert request["task_type"] == "material"
+    assert MainAgent(config={}).select_agents(request) == ["info_extract", "material"]
+
+
+def test_project_application_request_sets_generic_application_form():
+    state = _update_chat_state(
+        new_chat_state(),
+        "帮我生成mike的项目申报书",
+        understanding={
+            "input_role": "command",
+            "intent": "material",
+            "dialogue_action": "generate_material",
+        },
+    )
+
+    assert state["intent"] == "material"
+    assert state["material_type"] == "generic_application_form"
+    question = _next_chat_question(state)
+    assert "专业" in question
+    assert "大几" in question
+
+
+def test_material_request_does_not_run_after_only_profile_details():
+    state = _update_chat_state(
+        new_chat_state(),
+        "帮我生成小桃的项目申报书",
+        understanding={
+            "input_role": "command",
+            "intent": "material",
+            "dialogue_action": "generate_material",
+        },
+    )
+    state = _update_chat_state(
+        state,
+        "人工智能专业，大三",
+        understanding={
+            "input_role": "user_profile",
+            "major": "人工智能",
+            "grade": "大三",
+            "dialogue_action": "continue",
+        },
+    )
+
+    assert state["intent"] == "material"
+    assert state["major"] == "人工智能"
+    assert state["grade"] == "大三"
+    assert not state["notification_text"]
+    question = _next_chat_question(state)
+    assert "完整通知" in question or "申报要求" in question
+
+
+def test_material_request_runs_only_after_complete_notice_is_pasted():
+    state = _update_chat_state(
+        new_chat_state(),
+        "帮我生成小桃的项目申报书",
+        understanding={
+            "input_role": "command",
+            "intent": "material",
+            "dialogue_action": "generate_material",
+        },
+    )
+    state = _update_chat_state(
+        state,
+        "人工智能专业，大三",
+        understanding={
+            "input_role": "user_profile",
+            "major": "人工智能",
+            "grade": "大三",
+            "dialogue_action": "continue",
+        },
+    )
+    notice = (
+        "关于举办2026年“小桃杯”大学生创业计划竞赛的通知。"
+        "主办单位：创新创业学院。参赛对象：全日制在校本科生及研究生。"
+        "竞赛设新一代信息技术、文化创意和现代服务等赛道。"
+        "申报材料包括项目申报书、团队信息表及证明材料。"
+        "报名截止时间：2026年5月20日，具体要求以附件申报指南为准。"
+    )
+    state = _update_chat_state(
+        state,
+        notice,
+        understanding={
+            "input_role": "competition_notice",
+            "intent": "material",
+            "dialogue_action": "continue",
+        },
+    )
+
+    assert state["intent"] == "material"
+    assert state["notification_text"] == notice
+    assert _next_chat_question(state) is None
+    request = _chat_standard_input(state, notice)
+    assert MainAgent(config={}).select_agents(request) == ["info_extract", "material"]
+
+
+def test_structured_notice_below_old_length_threshold_is_still_accepted():
+    state = {
+        **new_chat_state(),
+        "intent": "material",
+        "major": "人工智能",
+        "grade": "大三",
+        "material_type": "generic_application_form",
+    }
+    notice = (
+        "竞赛通知：主办单位为创新学院；参赛对象为本科生；"
+        "申报材料包括项目申报书；报名截止时间为2026年5月20日。"
+    )
+
+    state = _update_chat_state(state, notice)
+
+    assert state["notification_text"] == notice
+    assert state["intent"] == "material"
+    assert _next_chat_question(state) is None
+
+
 def test_chat_material_transition_requires_selection_when_multiple_recommendations():
     state = {
         **new_chat_state(),
@@ -634,7 +785,7 @@ def test_major_change_starts_fresh_recommendation_context():
     assert _next_chat_question(state) is not None
 
 
-def test_cross_disciplinary_scope_does_not_repeat_direction_question():
+def test_cross_disciplinary_scope_still_asks_for_specific_topic():
     state = {
         **new_chat_state(),
         "intent": "recommendation",
@@ -645,13 +796,95 @@ def test_cross_disciplinary_scope_does_not_repeat_direction_question():
         "intent": "recommendation",
         "dialogue_action": "change_preferences",
         "competition_scope": "both",
-        "competition_type_status": "no_preference",
+        "competition_type_status": "unknown",
         "competition_level_status": "unknown",
         "acknowledgement": "明白了，本专业相关和跨学科方向都可以考虑。",
     })
 
     assert state["competition_scope"] == "both"
-    assert state["competition_type_confirmed"] is True
+    assert state["competition_type_confirmed"] is False
     question = _next_chat_question(state)
-    assert "级" in question
+    assert "具体" in question
+    assert "主题" in question
     assert "跨学科方向" not in question
+
+
+def test_recommendation_does_not_run_when_scope_level_and_skills_lack_topic():
+    state = {
+        **new_chat_state(),
+        "intent": "recommendation",
+        "major": "计算机科学与技术",
+        "grade": "大三",
+        "competition_scope": "cross_disciplinary",
+        "competition_level": "国家级",
+        "competition_level_confirmed": True,
+        "skills": ["Python", "C++"],
+    }
+
+    question = _next_chat_question(state)
+
+    assert question is not None
+    assert "主题" in question
+    assert state["competition_type_confirmed"] is False
+
+
+def test_main_agent_explains_structured_candidate_data_is_missing():
+    result = MainAgent(config={}).integrate_results(
+        {"task_type": "recommendation", "user_input": "没有特别擅长"},
+        [{
+            "agent_name": "recommendation_agent",
+            "status": "need_input",
+            "data": {},
+            "message": "structured_items 为空，请先补充可推荐的项目数据。",
+            "error": None,
+        }],
+    )
+
+    answer = result["final_answer"]
+    assert "个人信息已经足够" in answer
+    assert "竞赛候选数据" in answer
+    assert "补充一点信息" not in answer
+
+
+def test_main_agent_explains_supabase_rls_failure():
+    result = MainAgent(config={}).integrate_results(
+        {"task_type": "recommendation", "user_input": "没有特别擅长"},
+        [{
+            "agent_name": "info_collect_agent",
+            "status": "failed",
+            "data": {},
+            "message": "InfoCollectAgent execution failed.",
+            "error": {
+                "error_type": "APIError",
+                "error_message": "new row violates row-level security policy; code 42501",
+            },
+        }],
+    )
+
+    answer = result["final_answer"]
+    assert "不需要继续补充个人信息" in answer
+    assert "Supabase RLS" in answer
+
+
+def test_what_information_followup_explains_previous_need_input():
+    previous = {
+        "task_id": "task-need-input",
+        "data": {
+            "agent_results": [{
+                "agent_name": "recommendation_agent",
+                "status": "need_input",
+                "data": {},
+                "message": "缺少结构化项目数据（structured_items）。",
+                "error": None,
+            }]
+        },
+    }
+
+    result = MainAgent(config={}).handle_followup(
+        "什么信息",
+        previous,
+        {"intent": "recommendation"},
+    )
+
+    assert result is not None
+    assert "竞赛候选数据" in result["data"]["final_answer"]
